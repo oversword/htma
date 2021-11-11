@@ -1,8 +1,4 @@
  
-
-
-
-
 const debugStepper = (input, debug) => {
   const cont = document.createElement('div')
   cont.style.clear = 'both'
@@ -52,7 +48,7 @@ const debugStepper = (input, debug) => {
 
 class HTMA_Tester {
   #cases = []
-  #execCase = ({ input, args, expected, desc = '' }) => {
+  #execCase = ({ input, args, expected, desc = '', writeMode }) => {
     const log = []
     const orig_log = console.log
     console.log = (...args) => {
@@ -62,18 +58,22 @@ class HTMA_Tester {
     let actual = ''
     let failure = false
     try {
-      actual = htma(input, args, {
-        debug: (inp, deb) => {
-          debug = deb
-        }
-      })
-      // actual = htma(input, args, {
-      //   writer: dom_writer,
-      //   outputString: true,
-      //   debug: (inp, deb) => {
-      //     debug = deb
-      //   }
-      // })
+      if (writeMode === 'dom') {
+        actual = htma(input, args, {
+          writer: dom_writer,
+          outputString: true,
+          debug: (inp, deb) => {
+            debug = deb
+          }
+        })
+      } else
+      {
+        actual = htma(input, args, {
+          debug: (inp, deb) => {
+            debug = deb
+          }
+        })
+      }
     } catch(e) {
       failure = e
       console.error(e)
@@ -742,10 +742,6 @@ new HTMA_Tester()
 )
 /*
 .variate((testcase) => {
-  // const mindent = (testcase.input.match(/^([ \t]+)(?=[^\s])/gmi) || [''])
-  //   .reduce((curr, next) =>
-  //     (curr === false || next.length < curr.length) ? next : curr, false).length
-
   const variations = [
     {
       name: "Extra nesting",
@@ -811,4 +807,8 @@ new HTMA_Tester()
   ]
 })
 //*/
+.variate((testcase) => [
+  {...testcase,writeMode:'string'},
+  {...testcase,writeMode:'dom',desc:(testcase.desc||'')+' DOM'},
+])
 .exec()
