@@ -1,16 +1,29 @@
+const htma = (() => {
+// Enclose everything in a scope to avoid any globals
 
-Array.prototype.sliceAt = function (until) {
-	const i = this.findIndex(until)
+const array_sliceAt = (arr, until) => {
+	const i = arr.findIndex(until)
 	if (i === -1)
-		return this
-	return this.slice(0,i)
+		return arr
+	return arr.slice(0,i)
 }
-String.prototype.repeat = function (n) {
+const string_repeat = (s, n) => {
 	let ret = ''
 	for (let i=0; i<n; i++)
-		ret += this
+		ret += s
 	return ret
 }
+const filter_unique = (item, index, list) => list.indexOf(item) === index
+const filter_truthy = val => val
+
+const invertAliasIndex = aliasIndex =>
+	Object
+		.entries(aliasIndex)
+		.reduce((acc, [ canon, aliases ]) =>
+			aliases
+				.reduce((a, alias) =>
+					({ ...a, [alias]: canon }), acc),
+			{})
 
 const encodeEntities = (() => {
 	const HTMLEntities = {
@@ -270,7 +283,7 @@ const encodeEntities = (() => {
 	return encodeEntities
 })()
 
-class HTMA_Executor {
+class Executor {
 	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String']
 	#keywords = {}
 	constructor() {
@@ -316,16 +329,16 @@ class HTMA_Executor {
 	}
 
 	exec (expression, internal_props) {
-		return HTMA_Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), {...internal_props})
+		return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), {...internal_props})
 	}
 }
 
-class HTMA_Scope {
+class Scope {
 	#string = ''
 	constructor (string = '', props = {}, executor) {
 		this.#string = string
 		this.#props = {...props}
-		this.#executor = executor || new HTMA_Executor()
+		this.#executor = executor || new Executor()
 	}
 
 
@@ -385,7 +398,7 @@ class HTMA_Scope {
 		const data = set.map(({ data }) => data || {})
 		if (until === false)
 			return data
-		return data.sliceAt(until)
+		return array_sliceAt(data, until)
 	}
 	get_reading_data(type, check = false) {
 		const e = this.#reading.find(e => e.type === type && (!check || check(e.data || {})))
@@ -451,14 +464,45 @@ class HTMA_Scope {
 	}
 
 	#writer = {}
+	#writer_instance
 	set writer(newWriter) {
-		this.#writer = newWriter(this)
+
+		// Check the writer implements the required methods
+		if (!newWriter)
+			throw new Error(`Writer does not provide an instance when called.`)
+		if (typeof newWriter.inst !== 'function')
+			throw new Error(`The writer must implement an 'inst' method that creates a new object to write data to.`)
+		if (typeof newWriter.dump !== 'function')
+			throw new Error(`The writer must implement a 'dump' method that outputs the result after the writing is complete.`)
+		if (typeof newWriter.open !== 'function')
+			throw new Error(`The writer must implement an 'open' method that is called when a tag is opened.`)
+		if (typeof newWriter.close !== 'function')
+			throw new Error(`The writer must implement a 'close' method that is called when a tag is closed.`)
+		if (typeof newWriter.content !== 'function')
+			throw new Error(`The writer must implement a 'content' method that is called when plain text content is encountered.`)
+		if (typeof newWriter.nest !== 'function')
+			throw new Error(`The writer must implement a 'nest' method that is called for each step of a for loop.`)
+
+		this.#writer_instance = newWriter.inst()
+		this.#writer = Object.fromEntries(
+			Object.entries(newWriter)
+			.filter(([ name ]) => ['dump','dumpString','open','close','content','nest'].includes(name))
+			.map(([ name, method ]) => [
+				name,
+				(...args) => {
+					const result = method(this.#writer_instance, ...args)
+					if (['dump','dumpString'].includes(name))
+						return result
+					if (typeof result !== 'undefined')
+						this.#writer_instance = result
+				}
+			])
+		)
 	}
 	get writer() {
 		return {...this.#writer}
 	}
 }
-
 
 const syntax = {
 	CONTENT: 'content',
@@ -480,40 +524,9 @@ const tags = {
 	IF: 'if',
 	VAR: 'var',
 	ELSE: 'else',
-	ELSEIF:'elseif',
-	FOR:'for'
+	ELSEIF: 'elseif',
+	FOR: 'for'
 }
-
-const tagAliases = {
-	[tags.ELSEIF]: ['elif'],
-	[tags.FOR]: ['foreach'],
-	[tags.VAR]: ['print']
-
-}
-
-const commonAttributeAliases = {
-
-}
-
-const tagAttributeAliases = {
-	a: {
-		...commonAttributeAliases,
-		href: ['h','src','url']
-	}
-}
-
-const string_groups = {
-	indent: [' ', '\t'],
-	newline: ['\n'],
-	closetag: ['>'],
-	opentag: ['<'],
-	classseparator:['.'],
-	idmarker:['#'],
-	quote: ['"', "'"],
-	attrassign:['=',':'],
-	escape: ['\\']
-}
-string_groups.whitespace = string_groups.indent.concat(string_groups.newline)
 
 const tag_groups = {
 	system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF],
@@ -522,127 +535,27 @@ const tag_groups = {
 	if: [tags.IF,tags.ELSEIF]
 }
 
+const validAttributes = ([ prop, val ]) =>
+	val && !(Array.isArray(val) && val.length === 0)
+
+
 const string_is = (str, ...options) =>
-	options.some(option => option === str || option.includes(str))
-
-const string_is_tag = (str, ...options) =>
-	[].concat(...[].concat(...options.map(option => Array.isArray(option) ? option : [option]))
-		.map(option => tagAliases[option] ? [option, ...tagAliases[option]] : [option]))
+	[].concat(...options.map(option => Array.isArray(option) ? option : [option]))
 		.includes(str)
-
-const string_writer = scope => ({
-	init () {
-		scope.output = ''
-	},
-	dump () {
-		return scope.output
-	},
-	dumpString () {
-		return scope.output
-	},
-	open: tag => {
-		const attrs = Object
-				.entries(tag.attrs)
-				.filter(([prop, val]) => !(prop === 'class' && val.length === 0))
-				.map(([prop, val]) =>
-					`${prop.toLowerCase()}${val === true ? '' : `="${encodeEntities(Array.isArray(val) ? val.join(' ') : val)}"`}`)
-		scope.output += `<${tag.name}${attrs.length ? ` ${attrs.join(' ')}` : ''}>`
-	},
-	close: tag => {
-		scope.output += `</${tag.name}>`
-	},
-	content: content => {
-		scope.output += content
-	},
-	loop (loop, contents, passthrough) {
-		scope.output +=
-			loop.items
-			.map(([ key, val ]) => htma(
-				contents,
-				{
-					...scope.props,
-					[loop.varname]: val,
-					...(loop.keyname ? {[loop.keyname]: key } : {})
-				},
-				passthrough
-			))
-			.join('')
-	}
-})
-
-const dom_writer = scope => ({
-	init () {
-		scope.output = document.createElement('htma-container')
-	},
-	dump () {
-		return scope.output.childNodes
-	},
-	dumpString () {
-		return scope.output.innerHTML
-	},
-	open: tag => {
-		if (scope.currentCondition === false)
-			return
-		const newEl = document.createElement(tag.name)
-		Object
-				.entries(tag.attrs)
-				.filter(([prop, val]) => !(prop === 'class' && val.length === 0))
-				.forEach(([prop, val]) => {
-					newEl.setAttribute(prop, Array.isArray(val) ? val.join(' ') : val)
-				})
-		tag.element = newEl
-		const ancestor = scope.get_reading_data(syntax.TAG,
-			({ name, indent }) => !string_is_tag(name, tag_groups.system) && indent < tag.indent).element || scope.output
-		ancestor.appendChild(newEl)
-	},
-	close: tag => {
-		// not needed, no-op
-	},
-	content: content => {
-		if (scope.currentCondition === false)
-			return
-		const ancestor = scope.get_reading_data(syntax.TAG,
-			({ name, indent }) => !string_is_tag(name, tag_groups.system)).element || scope.output
-		const newEl = document.createTextNode(content)
-		ancestor.appendChild(newEl)
-	},
-	loop: (loop, contents, passthrough) => {
-		if (scope.currentCondition === false)
-			return
-
-		const ancestor = scope.get_reading_data(syntax.TAG,
-			({ name, indent }) => !string_is_tag(name, tag_groups.system)).element || scope.output
-
-		loop.items
-			.map(([ key, val ]) => htma(
-				contents,
-				{
-					...scope.props,
-					[loop.varname]: val,
-					...(loop.keyname ? {[loop.keyname]: key } : {})
-				},
-				{ ...passthrough, outputString: false }
-			))
-			.forEach(els => {
-				ancestor.append(...els)
-			})
-	}
-})
-
 
 const actions = {
 	open_tag(scope, tag) {
 		const conditional = scope.currentCondition
 		if (conditional === false)
 			return
-		if (string_is_tag(tag.name, tag_groups.system)) {
-			if (string_is_tag(tag.name, tag_groups.else) && scope.condition(tag.indent, true)) {
+		if (string_is(tag.name, tag_groups.system)) {
+			if (string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true)) {
 				tag.eval = false
 			} else
-			if (string_is_tag(tag.name, tags.ELSE)) {
+			if (string_is(tag.name, tags.ELSE)) {
 				tag.eval = true
 			} else
-			if (string_is_tag(tag.name, tags.FOR)) {
+			if (string_is(tag.name, tags.FOR)) {
 				let result = []
 				if (tag.attrs.in) {
 					result = scope.exec(tag.attrs.in)
@@ -684,7 +597,7 @@ const actions = {
 					? tag.attrs.exp
 					: tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
 				const result = scope.exec(exp)
-				if (string_is_tag(tag.name, tags.VAR)) {
+				if (string_is(tag.name, tags.VAR)) {
 					scope.stop_reading(syntax.TAG)
 					// reading attr value? send to buffer
 					if (scope.is_reading(syntax.ATTRVAL, true)) {
@@ -704,14 +617,20 @@ const actions = {
 					}
 				} else
 				{
-					tag.eval = string_is_tag(tag.name, tag_groups.condition) ? Boolean(result) : result
+					tag.eval = string_is(tag.name, tag_groups.condition) ? Boolean(result) : result
 				}
 			}
 		}
-		if (conditional !== false && !string_is_tag(tag.name, tag_groups.system)) {
-			scope.writer.open(tag)
+		if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
+			scope.writer.open({
+				name: tag.name,
+				indent: tag.indent,
+				attrs: Object
+					.entries(tag.attrs)
+					.filter(validAttributes)
+			})
 		}
-		if (string_is_tag(tag.name, tag_groups.condition) || scope.condition(tag.indent, true) !== undefined) {
+		if (string_is(tag.name, tag_groups.condition) || scope.condition(tag.indent, true) !== undefined) {
 			scope.setCondition(tag.indent, tag.eval)
 		}
 	},
@@ -720,264 +639,35 @@ const actions = {
 		siblings_and_nephews
 			.forEach(tag => {
 				const { indent, name } = tag
-				const print_close = name && scope.condition(indent) !== false && !string_is_tag(name, tag_groups.system)
+				const print_close = name &&
+					scope.condition(indent) !== false &&
+					!string_is(name, tag_groups.system)
+
 				scope.stop_reading(syntax.TAG, true)
-				if (print_close)
-					scope.writer.close(tag)
+				if (print_close && scope.currentCondition !== false)
+					scope.writer.close({
+						name: tag.name,
+						indent: tag.indent,
+					})
 			})
 	},
 	render_loop(scope, loop, passthrough) {
 		const contents = scope.buffer+scope.currentCharacter
-		scope.writer.loop(loop, contents, passthrough)
-		scope.buffer = ' '.repeat(loop.indent)
+		if (scope.currentCondition !== false)
+			loop.items.map(([ key, val ]) =>
+				scope.writer.nest(
+					contents,
+					{
+						...scope.props,
+						[loop.varname]: val,
+						...(loop.keyname ? {[loop.keyname]: key } : {})
+					},
+					{ ...passthrough }))
+		scope.buffer = string_repeat(' ', loop.indent)
 		scope.stop_reading(syntax.LOOP)
 		scope.start_reading(syntax.INDENT)
 	}
 }
-
-const conditions = [
-	{
-		reading: syntax.LOOP,
-		action(scope, { debug, ...passthrough }) {
-			const tag = scope.get_reading_data(syntax.TAG)
-			const loop = scope.reading_data
-			if (string_is(scope.currentCharacter, string_groups.newline)) {
-				loop.indent = 0
-			} else
-			if (string_is(scope.currentCharacter, string_groups.indent)) {
-				loop.indent += 1
-			}
-			if (!scope.followingCharacter || (!string_is(scope.followingCharacter, string_groups.whitespace) && loop.indent <= tag.indent)) {
-				actions.render_loop(scope, loop, { debug: debug(loop.index), ...passthrough })
-			} else {
-				return { buffer: scope.currentCharacter }
-			}
-		}
-	},
-	{
-		reading: syntax.TAGNAME,
-		string: [string_groups.whitespace, string_groups.idmarker, string_groups.classseparator, string_groups.closetag],
-		action(scope) {
-			const tag = scope.get_reading_data(syntax.TAG)
-			tag.name = scope.buffer
-			scope.stop_reading(syntax.TAGNAME)
-
-			if (string_is(scope.currentCharacter, string_groups.closetag)) {
-				actions.open_tag(scope, tag)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.idmarker)) {
-				scope.start_reading(syntax.ID)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.classseparator)) {
-				scope.start_reading(syntax.CLASS)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.whitespace)) {
-				scope.start_reading(syntax.TAGCONTENT)
-				if (string_is(scope.currentCharacter, string_groups.newline)) {
-					scope.start_reading(syntax.INDENT)
-				}
-			}
-		}
-	},
-	{
-		condition(scope) {
-			return scope.is_reading(syntax.TAGCONTENT, true) && scope.is_reading(syntax.ATTRNAME)
-		},
-		string: [string_groups.whitespace, string_groups.closetag, string_groups.attrassign],
-		action(scope) {
-
-			const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
-
-			tag.current_attr = scope.buffer
-			scope.stop_reading(syntax.ATTRNAME)
-
-			if (string_is(scope.currentCharacter, string_groups.closetag)) {
-				scope.stop_reading(syntax.ATTR)
-				scope.stop_reading(syntax.TAGCONTENT, true)
-				tag.attrs[tag.current_attr] = true
-				actions.open_tag(scope, tag)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.attrassign)) {
-				scope.start_reading(syntax.ATTRVAL)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.whitespace)) {
-				tag.attrs[tag.current_attr] = true
-				if (string_is(scope.currentCharacter, string_groups.newline)) {
-					scope.start_reading(syntax.INDENT)
-				}
-			}
-		}
-	},
-	{
-		reading: syntax.ATTRVAL,
-		string: [string_groups.whitespace, string_groups.closetag],
-		action(scope) {
-			const attributeCondition = scope.currentCondition
-			scope.stop_reading(syntax.ATTRVAL)
-			scope.stop_reading(syntax.ATTR)
-			const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
-
-			if (attributeCondition) {
-				if (tag.current_attr === 'class') {
-					tag.attrs.class = tag.attrs.class.concat(scope.buffer.split(' '))
-				} else
-				{
-					tag.attrs[tag.current_attr] = scope.buffer
-				}
-			}
-
-			if (string_is(scope.currentCharacter, string_groups.closetag)) {
-				scope.stop_reading(syntax.TAGCONTENT)
-				return actions.open_tag(scope, tag)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.newline)) {
-				scope.start_reading(syntax.INDENT)
-			}
-			return { setBuffer: '' }
-		}
-	},
-	{
-		condition(scope) {
-			return scope.is_reading(syntax.ID) || scope.is_reading(syntax.CLASS)
-		},
-		string: [string_groups.whitespace, string_groups.classseparator, string_groups.closetag],
-		action (scope) {
-			const tag = scope.get_reading_data(syntax.TAG)
-			if (scope.is_reading(syntax.ID)) {
-				tag.attrs.id = scope.buffer
-				scope.stop_reading(syntax.ID)
-			} else
-			if (scope.is_reading(syntax.CLASS)) {
-				tag.attrs.class.push(scope.buffer)
-				scope.stop_reading(syntax.CLASS)
-			}
-
-			if (string_is(scope.currentCharacter, string_groups.closetag)) {
-				actions.open_tag(scope, tag)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.classseparator)) {
-				scope.start_reading(syntax.CLASS)
-			} else
-			if (string_is(scope.currentCharacter, string_groups.whitespace)) {
-				scope.start_reading(syntax.TAGCONTENT)
-				if (string_is(scope.currentCharacter, string_groups.newline)) {
-					scope.start_reading(syntax.INDENT)
-				}
-			}
-		},
-	},
-	{
-		condition(scope, s) {
-			return scope.is_reading(syntax.STRING, true) && scope.is_reading(syntax.ESCAPE)
-		},
-		action(scope){
-			scope.stop_reading(syntax.ESCAPE)
-			scope.buffer += '\\'+scope.currentCharacter
-		}
-	},
-	{
-		condition(scope, s) {
-			return scope.is_reading(syntax.STRING) && !scope.is_reading(syntax.ESCAPE) && string_is(s, string_groups.escape)
-		},
-		action(scope){
-			scope.start_reading(syntax.ESCAPE)
-		}
-	},
-	{
-		condition(scope, s) {
-			return scope.is_reading(syntax.STRING, true) && !scope.is_reading(syntax.ESCAPE) && string_is(s, scope.get_reading_data(syntax.STRING).open)
-		},
-		action(scope){
-			scope.stop_reading(syntax.STRING, true)
-		}
-	},
-	{
-		reading: syntax.ATTRVAL,
-		string: [string_groups.quote],
-		action(scope){
-			scope.start_reading(syntax.STRING, { open: scope.currentCharacter })
-		}
-	},
-	{
-		condition(scope) {
-			return scope.is_reading(syntax.TAGCONTENT, true)
-		},
-		string: [string_groups.closetag],
-		action(scope) {
-			const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
-
-			scope.stop_reading(syntax.TAGCONTENT, true)
-			actions.open_tag(scope, tag)
-
-			return { setBuffer: '' }
-		}
-	},
-	{
-		string: [string_groups.opentag],
-		action(scope) {
-			const child_tag = {attrs:{class:[]}}
-			if (scope.is_reading(syntax.INDENT)) {
-				child_tag.indent = scope.buffer.length
-				scope.stop_reading(syntax.INDENT)
-				actions.close_tags(scope, child_tag.indent)
-			} else
-			if (scope.is_reading(syntax.TAGCONTENT)) {
-			} else
-			if (scope.is_reading(syntax.CONTENT)) {
-				scope.writer.content(scope.buffer)
-			}
-			scope.start_reading(syntax.TAG, child_tag)
-			scope.start_reading(syntax.TAGNAME)
-		}
-	},
-	{
-		string: [string_groups.newline],
-		action (scope) {
-			if (scope.is_reading(syntax.CONTENT)) {
-				scope.writer.content(scope.buffer)
-				scope.stop_reading(syntax.CONTENT)
-				scope.start_reading(syntax.INDENT)
-			} else
-			if (scope.is_reading(syntax.INDENT)) {
-			} else
-			{
-				scope.writer.content(scope.buffer)
-				scope.start_reading(syntax.INDENT)
-			}
-			return { setBuffer: '' }
-		}
-	},
-	{
-		condition(scope, s) {
-			return scope.is_reading(syntax.TAGCONTENT, true)
-					&& scope.reading
-							.sliceAt(({ type }) => type === syntax.TAGCONTENT)
-							.every	(({ type }) => !string_is(type, [syntax.ATTR, syntax.TAGNAME, syntax.ID, syntax.CLASS, 'tagvalue']))
-					&& !string_is(s, string_groups.whitespace)
-		},
-		action(scope) {
-			const attr_data = {}
-			if (scope.is_reading(syntax.INDENT)) {
-				attr_data.indent = scope.buffer.length
-				scope.stop_reading(syntax.INDENT)
-			}
-			scope.start_reading(syntax.ATTR, attr_data)
-			scope.start_reading(syntax.ATTRNAME)
-			return { setBuffer: scope.currentCharacter }
-		}
-	},
-	{
-		reading: syntax.INDENT,
-		condition(scope, s) {
-			return !string_is(s, string_groups.indent)
-		},
-		action(scope) {
-			scope.stop_reading(syntax.INDENT)
-			scope.start_reading(syntax.CONTENT, { indent: scope.buffer.length })
-			return { setBuffer: scope.currentCharacter }
-		}
-	}
-]
 
 
 const getConditionMatcher = scope =>
@@ -991,58 +681,938 @@ const getConditionMatcher = scope =>
 	}
 const defaultAction = scope => ({ buffer: scope.currentCharacter })
 
-const getParserStep = (scope, passthrough) => {
-	const matchingCondition = getConditionMatcher(scope)
-	return () => {
-		const foundCondition = conditions.find(matchingCondition)
-		const action = (foundCondition ? foundCondition.action : false) || defaultAction
-		const result = action(scope, passthrough)
-		scope.reserve += scope.currentCharacter
-		if (result) {
-			if (result.setBuffer !== undefined)
-				scope.buffer = result.setBuffer
-			if (result.buffer !== undefined)
-				scope.buffer += result.buffer
-			if (result.output !== undefined)
-				scope.output += result.output
+
+const mergeOptions = (def, ovr) => {
+	const ret = {}
+	for (const k in def) {
+		if (ovr[k] === null) continue
+		if (
+			(typeof def[k] === 'object' && !Array.isArray(def[k])) ||
+			(typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
+		)
+			ret[k] = mergeOptions(def[k], ovr[k] || {})
+		ret[k] = ovr[k] || def[k]
+	}
+	for (const k in ovr) {
+		if (ovr[k] === null) continue
+		if (k in def) continue
+		if (typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
+			ret[k] = mergeOptions({}, ovr[k])
+		ret[k] = ovr[k]
+	}
+	return ret
+}
+
+
+
+const instance = (instanceOptions = {}) => {
+
+	const writers = (() => {
+		const string_writer = {
+			inst: () => '',
+			dump: inst => inst,
+			open: (inst, tag) => {
+				const attrs = tag.attrs
+					.map(([prop, val]) =>
+						`${prop}${val === true ? '' : `="${encodeEntities(
+								Array.isArray(val)
+								? val
+									.filter(filter_truthy)
+									.filter(filter_unique)
+									.join(' ')
+								: val
+							)}"`}`)
+				return inst + `<${tag.name}${attrs.length ? ` ${attrs.join(' ')}` : ''}>`
+			},
+			close: (inst, tag) =>
+				inst + `</${tag.name}>`,
+			content: (inst, content) =>
+				inst + content,
+			nest: (inst, contents, arguments, options) =>
+				inst + parse(
+					contents,
+					arguments,
+					options
+				)
 		}
-		return foundCondition
-	}
-}
 
-const htma = (str = '', args = {}, options = {}) => {
-	const { debug: debug_call = false, writer = string_writer, outputString = false } = options
-	const scope = new HTMA_Scope(str, args)
-	scope.writer = writer
-	const debug_stack = []
-	const debug = (index, chosenCondition) => {
-		debug_stack.push({ index, reading: JSON.parse(JSON.stringify({ ...scope.data, chosen: chosenCondition })) })
+		const dom_writer = {
+			inst: () => ({
+				tracker: [{ element: document.createElement('htma-container'), indent: -1 }],
+				get lastAncestor() {
+					return this.tracker[0].element
+				},
+				get firstAncestor() {
+					return this.tracker[this.tracker.length-1].element
+				},
+			}),
+			dump: inst =>
+				inst.firstAncestor.childNodes,
+			dumpString: inst =>
+				inst.firstAncestor.innerHTML,
+			open: (inst, tag) => {
+				const newEl = document.createElement(tag.name)
+				tag.attrs
+					.forEach(([ prop, val ]) => {
+						newEl.setAttribute(prop,
+							val === true
+							? ''
+							: (Array.isArray(val)
+								? val
+									.filter(filter_truthy)
+									.filter(filter_unique)
+									.join(' ')
+								: val)
+						)
+					})
+				inst.tracker.unshift({ indent: tag.indent, element: newEl })
+				const ancestor = inst.tracker.find(({ indent }) => indent < tag.indent).element
+				ancestor.appendChild(newEl)
+			},
+			close: (inst, tag) => {
+				inst.tracker.shift()
+			},
+			content: (inst, content) => {
+				const ancestor = inst.lastAncestor
+				const newEl = document.createTextNode(content)
+				ancestor.appendChild(newEl)
+			},
+			nest: (inst, contents, arguments, options) => {
+				const ancestor = inst.lastAncestor
+
+				const els = parse(
+					contents,
+					arguments,
+					{ ...options, outputString: false }
+				)
+				ancestor.append(...els)
+			}
+		}
+
+		return {
+			default: string_writer,
+			string: string_writer,
+			dom: dom_writer
+		}
+	})()
+
+	if (instanceOptions.defaultWriter)
+		writers.default = instanceOptions.defaultWriter
+
+
+	const commonAttributeAliases = invertAliasIndex(
+		(instanceOptions.aliases && instanceOptions.aliases.attributes) || {})
+	const tagAliases = invertAliasIndex(
+		(instanceOptions.aliases && instanceOptions.aliases.tags) || {})
+	const tagAttributeAliases =
+		Object.fromEntries(
+			Object
+				.entries((instanceOptions.aliases && instanceOptions.aliases.tagAttributes) || {})
+				.map(([ k, v ]) => [ k, invertAliasIndex(v) ])
+		)
+
+	const string_groups = instanceOptions.tokens || {}
+
+
+	const conditions = [
+		{
+			reading: syntax.LOOP,
+			action(scope, { debug, ...passthrough }) {
+				const tag = scope.get_reading_data(syntax.TAG)
+				const loop = scope.reading_data
+				if (string_is(scope.currentCharacter, string_groups.newline)) {
+					loop.indent = 0
+				} else
+				if (string_is(scope.currentCharacter, string_groups.indent)) {
+					loop.indent += 1
+				}
+				if (!scope.followingCharacter || (!string_is(scope.followingCharacter, string_groups.indent, string_groups.newline) && loop.indent <= tag.indent)) {
+					actions.render_loop(scope, loop, { debug: debug(loop.index), ...passthrough })
+				} else {
+					return { buffer: scope.currentCharacter }
+				}
+			}
+		},
+		{
+			reading: syntax.TAGNAME,
+			string: [string_groups.indent, string_groups.newline, string_groups.idmarker, string_groups.classseparator, string_groups.closetag],
+			action(scope) {
+				const tag = scope.get_reading_data(syntax.TAG)
+				const tagName = scope.buffer.toLowerCase()
+				tag.name = tagAliases[tagName] || tagName
+				scope.stop_reading(syntax.TAGNAME)
+
+				if (string_is(scope.currentCharacter, string_groups.closetag)) {
+					actions.open_tag(scope, tag)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.idmarker)) {
+					scope.start_reading(syntax.ID)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.classseparator)) {
+					scope.start_reading(syntax.CLASS)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
+					scope.start_reading(syntax.TAGCONTENT)
+					if (string_is(scope.currentCharacter, string_groups.newline)) {
+						scope.start_reading(syntax.INDENT)
+					}
+				}
+			}
+		},
+		{
+			condition(scope) {
+				return scope.is_reading(syntax.TAGCONTENT, true) && scope.is_reading(syntax.ATTRNAME)
+			},
+			string: [string_groups.indent, string_groups.newline, string_groups.closetag, string_groups.attrassign],
+			action(scope) {
+
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+
+				const attributeAliases = tagAttributeAliases[tag.name] || {}
+				const attrName = scope.buffer.toLowerCase()
+				tag.current_attr = attributeAliases[attrName] || commonAttributeAliases[attrName] || attrName
+				scope.stop_reading(syntax.ATTRNAME)
+
+				if (string_is(scope.currentCharacter, string_groups.closetag)) {
+					scope.stop_reading(syntax.ATTR)
+					scope.stop_reading(syntax.TAGCONTENT, true)
+					tag.attrs[tag.current_attr] = true
+					actions.open_tag(scope, tag)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.attrassign)) {
+					scope.start_reading(syntax.ATTRVAL)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
+					tag.attrs[tag.current_attr] = true
+					if (string_is(scope.currentCharacter, string_groups.newline)) {
+						scope.start_reading(syntax.INDENT)
+					}
+				}
+			}
+		},
+		{
+			reading: syntax.ATTRVAL,
+			string: [string_groups.indent, string_groups.newline, string_groups.closetag],
+			action(scope) {
+				const attributeCondition = scope.currentCondition
+				scope.stop_reading(syntax.ATTRVAL)
+				scope.stop_reading(syntax.ATTR)
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+
+				if (attributeCondition) {
+					if (tag.current_attr === 'class') {
+						tag.attrs.class = tag.attrs.class.concat(scope.buffer.split(' '))
+					} else
+					{
+						tag.attrs[tag.current_attr] = scope.buffer
+					}
+				}
+
+				if (string_is(scope.currentCharacter, string_groups.closetag)) {
+					scope.stop_reading(syntax.TAGCONTENT)
+					return actions.open_tag(scope, tag)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.newline)) {
+					scope.start_reading(syntax.INDENT)
+				}
+				return { setBuffer: '' }
+			}
+		},
+		{
+			condition(scope) {
+				return scope.is_reading(syntax.ID) || scope.is_reading(syntax.CLASS)
+			},
+			string: [string_groups.indent, string_groups.newline, string_groups.classseparator, string_groups.closetag],
+			action (scope) {
+				const tag = scope.get_reading_data(syntax.TAG)
+				if (scope.is_reading(syntax.ID)) {
+					tag.attrs.id = scope.buffer
+					scope.stop_reading(syntax.ID)
+				} else
+				if (scope.is_reading(syntax.CLASS)) {
+					tag.attrs.class.push(scope.buffer)
+					scope.stop_reading(syntax.CLASS)
+				}
+
+				if (string_is(scope.currentCharacter, string_groups.closetag)) {
+					actions.open_tag(scope, tag)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.classseparator)) {
+					scope.start_reading(syntax.CLASS)
+				} else
+				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
+					scope.start_reading(syntax.TAGCONTENT)
+					if (string_is(scope.currentCharacter, string_groups.newline)) {
+						scope.start_reading(syntax.INDENT)
+					}
+				}
+			},
+		},
+		{
+			condition(scope, s) {
+				return scope.is_reading(syntax.STRING, true) && scope.is_reading(syntax.ESCAPE)
+			},
+			action(scope){
+				scope.stop_reading(syntax.ESCAPE)
+				scope.buffer += '\\'+scope.currentCharacter
+			}
+		},
+		{
+			condition(scope, s) {
+				return scope.is_reading(syntax.STRING) && !scope.is_reading(syntax.ESCAPE) && string_is(s, string_groups.escape)
+			},
+			action(scope){
+				scope.start_reading(syntax.ESCAPE)
+			}
+		},
+		{
+			condition(scope, s) {
+				return scope.is_reading(syntax.STRING, true) && !scope.is_reading(syntax.ESCAPE) && string_is(s, scope.get_reading_data(syntax.STRING).open)
+			},
+			action(scope){
+				scope.stop_reading(syntax.STRING, true)
+			}
+		},
+		{
+			reading: syntax.ATTRVAL,
+			string: [string_groups.quote],
+			action(scope){
+				scope.start_reading(syntax.STRING, { open: scope.currentCharacter })
+			}
+		},
+		{
+			condition(scope) {
+				return scope.is_reading(syntax.TAGCONTENT, true)
+			},
+			string: [string_groups.closetag],
+			action(scope) {
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+
+				scope.stop_reading(syntax.TAGCONTENT, true)
+				actions.open_tag(scope, tag)
+
+				return { setBuffer: '' }
+			}
+		},
+		{
+			string: [string_groups.opentag],
+			action(scope) {
+				const child_tag = {attrs:{class:[]}}
+				if (scope.is_reading(syntax.INDENT)) {
+					child_tag.indent = scope.buffer.length
+					scope.stop_reading(syntax.INDENT)
+					actions.close_tags(scope, child_tag.indent)
+				} else
+				if (scope.is_reading(syntax.TAGCONTENT)) {
+				} else
+				if (scope.is_reading(syntax.CONTENT)) {
+					if (scope.currentCondition !== false)
+						scope.writer.content(scope.buffer)
+				}
+				scope.start_reading(syntax.TAG, child_tag)
+				scope.start_reading(syntax.TAGNAME)
+			}
+		},
+		{
+			string: [string_groups.newline],
+			action (scope) {
+				if (scope.is_reading(syntax.CONTENT)) {
+					if (scope.currentCondition !== false)
+						scope.writer.content(scope.buffer)
+					scope.stop_reading(syntax.CONTENT)
+					scope.start_reading(syntax.INDENT)
+				} else
+				if (scope.is_reading(syntax.INDENT)) {
+				} else
+				{
+					if (scope.currentCondition !== false)
+						scope.writer.content(scope.buffer)
+					scope.start_reading(syntax.INDENT)
+				}
+				return { setBuffer: '' }
+			}
+		},
+		{
+			condition(scope, s) {
+				return scope.is_reading(syntax.TAGCONTENT, true)
+						&& array_sliceAt(scope.reading,
+									({ type }) => type === syntax.TAGCONTENT)
+								.every	(({ type }) => !string_is(type, [syntax.ATTR, syntax.TAGNAME, syntax.ID, syntax.CLASS, 'tagvalue']))
+						&& !string_is(s, string_groups.indent, string_groups.newline)
+			},
+			action(scope) {
+				const attr_data = {}
+				if (scope.is_reading(syntax.INDENT)) {
+					attr_data.indent = scope.buffer.length
+					scope.stop_reading(syntax.INDENT)
+				}
+				scope.start_reading(syntax.ATTR, attr_data)
+				scope.start_reading(syntax.ATTRNAME)
+				return { setBuffer: scope.currentCharacter }
+			}
+		},
+		{
+			reading: syntax.INDENT,
+			condition(scope, s) {
+				return !string_is(s, string_groups.indent)
+			},
+			action(scope) {
+				scope.stop_reading(syntax.INDENT)
+				scope.start_reading(syntax.CONTENT, { indent: scope.buffer.length })
+				return { setBuffer: scope.currentCharacter }
+			}
+		}
+	]
+
+
+	const getParserStep = (scope, passthrough) => {
+		const matchingCondition = getConditionMatcher(scope)
+		return () => {
+			const foundCondition = conditions.find(matchingCondition)
+			const action = (foundCondition ? foundCondition.action : false) || defaultAction
+			const result = action(scope, passthrough)
+			scope.reserve += scope.currentCharacter
+			if (result) {
+				if (result.setBuffer !== undefined)
+					scope.buffer = result.setBuffer
+				if (result.buffer !== undefined)
+					scope.buffer += result.buffer
+				if (result.output !== undefined)
+					scope.output += result.output
+			}
+			return foundCondition
+		}
 	}
-	const subDebugCall = debug_call ? (index) => (inp, sub_debug_stack) => {
-		sub_debug_stack.forEach(db => {
-			debug_stack.push({ index: index+1+db.index, reading: db.reading })
-		})
-	} : () => false
-	const parse = getParserStep(scope, { debug: subDebugCall, ...options })
-	scope.writer.init()
-	if (debug_call)
-		debug(0, -2)
-	while (scope.next) {
-		const foundCondition = parse()
+
+	const parse = (str = '', args = {}, options = {}) => {
+		const {
+			debug: debug_call = false,
+			writer = writers.default,
+			outputString = false
+		} = options
+
+		// Init scope
+		const scope = new Scope(str, args)
+		scope.writer = writer
+
+		// Set up debug stuff
+		const debug_stack = []
+		const debug = (index, chosenCondition) =>
+			debug_stack.push({ index, reading: JSON.parse(JSON.stringify({ ...scope.data, chosen: chosenCondition })) })
+		const subDebugCall = debug_call ? (index) => (inp, sub_debug_stack) => {
+			sub_debug_stack.forEach(db => {
+				debug_stack.push({ index: index+1+db.index, reading: db.reading })
+			})
+		} : () => false
+
+		// Get a parser instance for this scope
+		const parse = getParserStep(scope, { debug: subDebugCall, ...options })
+
+		// Zero-th debug step, before any action
 		if (debug_call)
-			debug(scope.index+1, conditions.indexOf(foundCondition))
-	}
-	if (scope.is_reading(syntax.CONTENT)) {
-		scope.writer.content(scope.buffer)
-		scope.stop_reading(syntax.CONTENT)
-	}
-	actions.close_tags(scope, 0)
+			debug(0, -2)
 
-	if (debug_call) {
-		debug(str.length+1, -3)
-		debug_call(str, debug_stack)
+		// Parse every character of the string one by one
+		while (scope.next) {
+			const foundCondition = parse()
+
+			// Record each step of the parsing
+			if (debug_call)
+				debug(scope.index+1, conditions.indexOf(foundCondition))
+		}
+
+		// Write any remaining content
+		if (scope.is_reading(syntax.CONTENT)) {
+			if (scope.currentCondition !== false)
+				scope.writer.content(scope.buffer)
+			scope.stop_reading(syntax.CONTENT)
+		}
+		// Close all remaining tags
+		actions.close_tags(scope, 0)
+
+		if (debug_call) {
+			// Final debug step, after all actions
+			debug(str.length+1, -3)
+			// Output the debug data
+			debug_call(str, debug_stack)
+		}
+
+		// Output final result
+		if (outputString && scope.writer.dumpString)
+			return scope.writer.dumpString()
+		return scope.writer.dump()
 	}
-	if (outputString)
-		return scope.writer.dumpString()
-	return scope.writer.dump()
+
+	return {
+		parse,
+		writers,
+		custom: (opts = {}) =>
+			instance(mergeOptions(instanceOptions, opts))
+	}
+
 }
+
+
+
+return instance({
+	aliases: {
+		tags: {
+			elseif: ['elif'],
+			for: ['foreach'],
+			var: ['print']
+		},
+		attributes: {
+			accesskey: [],
+			autocapitalize: [],
+			class: [],
+			contenteditable: [],
+				enterkeyhint: [],
+				inputmode: [],
+			contextmenu: [],
+			dir: [],
+			draggable: [],
+			hidden: [],
+			id: [],
+			itemprop: [],
+			lang: [],
+			slot: [],
+			spellcheck: [],
+			style: [],
+			tabindex: [],
+			title: [],
+			translate: [],
+		},
+		tagAttributes: {
+			a: {
+				download: [],
+				href: ['h','src','url'],
+				hreflang: [],
+				media: [],
+				ping: [],
+				referrerpolicy: [],
+				rel: [],
+				shape: [],
+				target: []
+			},
+			applet: {
+				align: [],
+				alt: [],
+				code: [],
+				codebase: []
+			},
+			area: {
+				alt: [],
+				coords: [],
+				download: [],
+				href: [],
+				hreflang: [],
+				media: [],
+				ping: [],
+				referrerpolicy: [],
+				rel: [],
+				shape: [],
+				target: []
+			},
+			audio: {
+				autoplay: [],
+				buffered: [],
+				controls: [],
+				crossorigin: [],
+				loop: [],
+				muted: [],
+				preload: [],
+				src: []
+			},
+			base: {
+				href: [],
+				target: []
+			},
+			basefont: {
+				color: []
+			},
+			bgsound: {
+				loop: []
+			},
+			blockquote: {
+				cite: []
+			},
+			body: {
+				background: [],
+				bgcolor: []
+			},
+			button: {
+				autofocus: [],
+				disabled: [],
+				form: [],
+				formaction: [],
+				formenctype: [],
+				formmethod: [],
+				formnovalidate: [],
+				formtarget: [],
+				name: [],
+				type: [],
+				value: []
+			},
+			canvas: {
+				height: [],
+				width: []
+			},
+			caption: {
+				align: []
+			},
+			col: {
+				align: [],
+				bgcolor: [],
+				span: []
+			},
+			colgroup: {
+				align: [],
+				bgcolor: [],
+				span: []
+			},
+			command: {
+				checked: [],
+				disabled: [],
+				icon: [],
+				radiogroup: [],
+				type: []
+			},
+			data: {
+				value: []
+			},
+			del: {
+				cite: [],
+				datetime: []
+			},
+			details: {
+				open: []
+			},
+			dialog: {
+				open: []
+			},
+			embed: {
+				height: [],
+				src: [],
+				type: [],
+				width: []
+			},
+			fieldset: {
+				disabled: [],
+				form: [],
+				name: []
+			},
+			font: {
+				color: []
+			},
+			form: {
+				accept: [],
+				"accept-charset": [],
+				action: [],
+				autocomplete: [],
+				enctype: [],
+				method: [],
+				name: [],
+				novalidate: [],
+				target: []
+			},
+			hr: {
+				align: [],
+				color: []
+			},
+			html: {
+				manifest: []
+			},
+			iframe: {
+				align: [],
+				allow: [],
+				csp: [],
+				height: [],
+				importance: [],
+				loading: [],
+				name: [],
+				referrerpolicy: [],
+				sandbox: [],
+				src: [],
+				srcdoc: [],
+				width: []
+			},
+			img: {
+				align: [],
+				alt: [],
+				border: [],
+				crossorigin: [],
+				decoding: [],
+				height: [],
+				importance: [],
+				intrinsicsize: [],
+				ismap: [],
+				loading: [],
+				referrerpolicy: [],
+				sizes: [],
+				src: [],
+				srcset: [],
+				usemap: [],
+				width: []
+			},
+			input: {
+				accept: [],
+				alt: [],
+				autocomplete: [],
+				autofocus: [],
+				capture: [],
+				checked: [],
+				dirname: [],
+				disabled: [],
+				form: [],
+				formaction: [],
+				formenctype: [],
+				formmethod: [],
+				formnovalidate: [],
+				formtarget: [],
+				height: [],
+				list: [],
+				max: [],
+				maxlength: [],
+				min: [],
+				minlength: [],
+				multiple: [],
+				name: [],
+				pattern: [],
+				placeholder: [],
+				readonly: [],
+				required: [],
+				size: [],
+				src: [],
+				step: [],
+				type: [],
+				usemap: [],
+				value: [],
+				width: []
+			},
+			ins: {
+				cite: [],
+				datetime: []
+			},
+			keygen: {
+				autofocus: [],
+				challenge: [],
+				disabled: [],
+				form: [],
+				keytype: [],
+				name: []
+			},
+			label: {
+				for: [],
+				form: []
+			},
+			li: {
+				value: []
+			},
+			link: {
+				crossorigin: [],
+				href: [],
+				hreflang: [],
+				importance: [],
+				integrity: [],
+				media: [],
+				referrerpolicy: [],
+				rel: [],
+				sizes: [],
+				type: []
+			},
+			map: {
+				name: []
+			},
+			marquee: {
+				bgcolor: [],
+				loop: []
+			},
+			menu: {
+				type: []
+			},
+			meta: {
+				charset: [],
+				content: [],
+				"http-equiv": [],
+				name: []
+			},
+			meter: {
+				form: [],
+				high: [],
+				low: [],
+				max: [],
+				min: [],
+				optimum: [],
+				value: []
+			},
+			object: {
+				border: [],
+				data: [],
+				form: [],
+				height: [],
+				name: [],
+				type: [],
+				usemap: [],
+				width: []
+			},
+			ol: {
+				reversed: [],
+				start: []
+			},
+			output: {
+				for: [],
+				form: [],
+				name: []
+			},
+			optgroup: {
+				disabled: [],
+				label: []
+			},
+			option: {
+				disabled: [],
+				label: [],
+				selected: [],
+				value: []
+			},
+			param: {
+				name: [],
+				value: []
+			},
+			progress: {
+				form: [],
+				max: [],
+				value: []
+			},
+			q: {
+				cite: []
+			},
+			script: {
+				async: [],
+				charset: [],
+				crossorigin: [],
+				defer: [],
+				importance: [],
+				integrity: [],
+				language: [],
+				referrerpolicy: [],
+				src: [],
+				type: []
+			},
+			select: {
+				autocomplete: [],
+				autofocus: [],
+				disabled: [],
+				form: [],
+				multiple: [],
+				name: [],
+				required: [],
+				size: []
+			},
+			source: {
+				media: [],
+				sizes: [],
+				src: [],
+				srcset: [],
+				type: []
+			},
+			style: {
+				media: [],
+				scoped: [],
+				type: []
+			},
+			table: {
+				align: [],
+				background: [],
+				bgcolor: [],
+				border: [],
+				summary: []
+			},
+			tbody: {
+				align: [],
+				bgcolor: []
+			},
+			td: {
+				align: [],
+				background: [],
+				bgcolor: [],
+				colspan: [],
+				headers: [],
+				rowspan: []
+			},
+			textarea: {
+				autocomplete: [],
+				autofocus: [],
+				cols: [],
+				dirname: [],
+				disabled: [],
+				enterkeyhint: [],
+				form: [],
+				inputmode: [],
+				maxlength: [],
+				minlength: [],
+				name: [],
+				placeholder: [],
+				readonly: [],
+				required: [],
+				rows: [],
+				wrap: []
+			},
+			tfoot: {
+				align: [],
+				bgcolor: []
+			},
+			th: {
+				align: [],
+				background: [],
+				bgcolor: [],
+				colspan: [],
+				headers: [],
+				rowspan: [],
+				scope: []
+			},
+			thead: {
+				align: []
+			},
+			time: {
+				datetime: []
+			},
+			tr: {
+				align: [],
+				bgcolor: []
+			},
+			track: {
+				default: [],
+				kind: [],
+				label: [],
+				src: [],
+				srclang: []
+			},
+			video: {
+				autoplay: [],
+				buffered: [],
+				controls: [],
+				crossorigin: [],
+				height: [],
+				loop: [],
+				muted: [],
+				poster: [],
+				preload: [],
+				src: [],
+				width: []
+			},
+		}
+	},
+	tokens: {
+		indent: [' ', '\t'],
+		newline: ['\n'],
+		closetag: ['>'],
+		opentag: ['<'],
+		classseparator:['.'],
+		idmarker:['#'],
+		quote: ['"', "'"],
+		attrassign:['=',':'],
+		escape: ['\\'],
+	}
+})
+
+})()
