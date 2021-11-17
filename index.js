@@ -296,7 +296,11 @@ class Executor {
 		{ window, globals, global, document } = {}
 	) => {
 		let result
-		eval(`result = (${exp})`)
+		try {
+			eval(`result = (${exp})`)
+		} catch (e) {
+			console.error(e, exp, internal_props)
+		}
 		return result
 	}
 
@@ -427,21 +431,10 @@ class Scope {
 		this.#buffer = newBuffer
 	}
 
-	#output = ''
-	get output() {
-		return this.#output
-	}
-	set output(newOutpt) {
-		this.#reserve = ''
-		if (this.currentCondition !== false)
-			this.#output = newOutpt
-	}
-
-
 	get data() {
 		return {
 			buffer: this.#buffer,
-			output: this.#output,
+			output: (this.#writer.dumpString || this.#writer.dump)(),
 			reading: [...this.#reading],
 			conditions: Object.entries(this.#conditions),
 			conditional: this.currentCondition,
@@ -535,6 +528,27 @@ const tag_groups = {
 	if: [tags.IF,tags.ELSEIF]
 }
 
+const self_closing_tags = {
+	area: true,
+	base: true,
+	br: true,
+	col: true,
+	command: true,
+	embed: true,
+	hr: true,
+	img: true,
+	input: true,
+	keygen: true,
+	link: true,
+	menuitem: true,
+	meta: true,
+	param: true,
+	source: true,
+	track: true,
+	wbr: true
+}
+
+
 const validAttributes = ([ prop, val ]) =>
 	val && !(Array.isArray(val) && val.length === 0)
 
@@ -543,11 +557,45 @@ const string_is = (str, ...options) =>
 	[].concat(...options.map(option => Array.isArray(option) ? option : [option]))
 		.includes(str)
 
+
+
+const custom_components = {}
+
+const add_component = (name, str) => {
+	custom_components[name] = str
+}
+
+
+
 const actions = {
-	open_tag(scope, tag) {
+	open_tag(scope, tag, passthrough) {
 		const conditional = scope.currentCondition
 		if (conditional === false)
-			return
+			return { setBuffer: '' }
+		let buff = false
+
+		const custom = custom_components[tag.name]
+		if (custom) {
+			let contents
+			let defs = {}
+			if (typeof custom === 'string')
+				contents = custom
+			else {
+				const obj = new custom_components[tag.name]()
+				contents = obj.toString()
+				defs = obj.defaults || defs
+			}
+
+			scope.writer.nest(
+				contents,
+				{ ...defs, ...tag.attrs },
+				{ ...passthrough })
+
+			scope.stop_reading(syntax.TAG)
+			return { setBuffer: '' }
+		} else
+		{
+
 		if (string_is(tag.name, tag_groups.system)) {
 			if (string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true)) {
 				tag.eval = false
@@ -597,21 +645,24 @@ const actions = {
 					? tag.attrs.exp
 					: tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
 				const result = scope.exec(exp)
+				// console.log(exp, result)
 				if (string_is(tag.name, tags.VAR)) {
 					scope.stop_reading(syntax.TAG)
 					// reading attr value? send to buffer
+					scope.buffer = result//.toString()
+					buff = true
 					if (scope.is_reading(syntax.ATTRVAL, true)) {
-						scope.buffer += result.toString()
+						// scope.buffer += result.toString()
 					} else
 					// reading tag content? assume attrname
 					if (scope.is_reading(syntax.TAGCONTENT)) {
-						scope.buffer += result.toString()
+						// scope.buffer += result.toString()
 						scope.start_reading(syntax.ATTR)
 						scope.start_reading(syntax.ATTRNAME)
 					} else
 					// Reading nothing? start reading content
 					{
-						scope.buffer += result.toString()
+						// scope.buffer += result.toString()
 						if (!scope.is_reading(syntax.CONTENT))
 							scope.start_reading(syntax.CONTENT)
 					}
@@ -622,17 +673,25 @@ const actions = {
 			}
 		}
 		if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
+			const selfClosing = tag.selfClosing || self_closing_tags[tag.name] || false
 			scope.writer.open({
 				name: tag.name,
 				indent: tag.indent,
+				selfClosing,
 				attrs: Object
 					.entries(tag.attrs)
 					.filter(validAttributes)
 			})
+			if (selfClosing)
+				scope.stop_reading(syntax.TAG, true)
 		}
 		if (string_is(tag.name, tag_groups.condition) || scope.condition(tag.indent, true) !== undefined) {
 			scope.setCondition(tag.indent, tag.eval)
 		}
+
+		}
+		if (!buff)
+			return { setBuffer: '' }
 	},
 	close_tags(scope, min_indent) {
 		const siblings_and_nephews = scope.get_all_reading_data(syntax.TAG, ({ indent }) => indent < min_indent)
@@ -712,6 +771,7 @@ const instance = (instanceOptions = {}) => {
 			inst: () => '',
 			dump: inst => inst,
 			open: (inst, tag) => {
+				console.log(tag)
 				const attrs = tag.attrs
 					.map(([prop, val]) =>
 						`${prop}${val === true ? '' : `="${encodeEntities(
@@ -720,9 +780,9 @@ const instance = (instanceOptions = {}) => {
 									.filter(filter_truthy)
 									.filter(filter_unique)
 									.join(' ')
-								: val
+								: val.toString()
 							)}"`}`)
-				return inst + `<${tag.name}${attrs.length ? ` ${attrs.join(' ')}` : ''}>`
+				return inst + `<${tag.name}${attrs.length ? ` ${attrs.join(' ')}` : ''}${tag.selfClosing ? '/' : ''}>`
 			},
 			close: (inst, tag) =>
 				inst + `</${tag.name}>`,
@@ -765,7 +825,8 @@ const instance = (instanceOptions = {}) => {
 								: val)
 						)
 					})
-				inst.tracker.unshift({ indent: tag.indent, element: newEl })
+				if (!tag.selfClosing)
+					inst.tracker.unshift({ indent: tag.indent, element: newEl })
 				const ancestor = inst.tracker.find(({ indent }) => indent < tag.indent).element
 				ancestor.appendChild(newEl)
 			},
@@ -836,14 +897,16 @@ const instance = (instanceOptions = {}) => {
 		{
 			reading: syntax.TAGNAME,
 			string: [string_groups.indent, string_groups.newline, string_groups.idmarker, string_groups.classseparator, string_groups.closetag],
-			action(scope) {
+			action(scope, passthrough) {
 				const tag = scope.get_reading_data(syntax.TAG)
-				const tagName = scope.buffer.toLowerCase()
+				const tagName = scope.buffer
+				const canonName = tagAliases[tagName] || tagName
+				const finalName = custom_components[canonName] ? canonName : canonName.toLowerCase()
 				tag.name = tagAliases[tagName] || tagName
 				scope.stop_reading(syntax.TAGNAME)
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
-					actions.open_tag(scope, tag)
+					actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.idmarker)) {
 					scope.start_reading(syntax.ID)
@@ -864,7 +927,7 @@ const instance = (instanceOptions = {}) => {
 				return scope.is_reading(syntax.TAGCONTENT, true) && scope.is_reading(syntax.ATTRNAME)
 			},
 			string: [string_groups.indent, string_groups.newline, string_groups.closetag, string_groups.attrassign],
-			action(scope) {
+			action(scope, passthrough) {
 
 				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
 
@@ -876,14 +939,17 @@ const instance = (instanceOptions = {}) => {
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
 					scope.stop_reading(syntax.ATTR)
 					scope.stop_reading(syntax.TAGCONTENT, true)
-					tag.attrs[tag.current_attr] = true
-					actions.open_tag(scope, tag)
+					if (scope.currentCondition)
+						tag.attrs[tag.current_attr] = true
+					actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.attrassign)) {
-					scope.start_reading(syntax.ATTRVAL)
+					scope.start_reading(syntax.ATTRVAL, {value:''})
 				} else
 				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
-					tag.attrs[tag.current_attr] = true
+					if (scope.currentCondition)
+						tag.attrs[tag.current_attr] = true
+					scope.stop_reading(syntax.ATTR)
 					if (string_is(scope.currentCharacter, string_groups.newline)) {
 						scope.start_reading(syntax.INDENT)
 					}
@@ -893,24 +959,28 @@ const instance = (instanceOptions = {}) => {
 		{
 			reading: syntax.ATTRVAL,
 			string: [string_groups.indent, string_groups.newline, string_groups.closetag],
-			action(scope) {
+			action(scope, passthrough) {
 				const attributeCondition = scope.currentCondition
+				const prevVal = scope.get_reading_data(syntax.ATTRVAL).value
+				const curVal = scope.buffer
+				const attrVal = prevVal ? (prevVal + curVal) : curVal
+
 				scope.stop_reading(syntax.ATTRVAL)
 				scope.stop_reading(syntax.ATTR)
 				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
 
 				if (attributeCondition) {
 					if (tag.current_attr === 'class') {
-						tag.attrs.class = tag.attrs.class.concat(scope.buffer.split(' '))
+						tag.attrs.class = tag.attrs.class.concat((''+attrVal).split(' '))
 					} else
 					{
-						tag.attrs[tag.current_attr] = scope.buffer
+						tag.attrs[tag.current_attr] = attrVal
 					}
 				}
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
 					scope.stop_reading(syntax.TAGCONTENT)
-					return actions.open_tag(scope, tag)
+					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.newline)) {
 					scope.start_reading(syntax.INDENT)
@@ -923,7 +993,7 @@ const instance = (instanceOptions = {}) => {
 				return scope.is_reading(syntax.ID) || scope.is_reading(syntax.CLASS)
 			},
 			string: [string_groups.indent, string_groups.newline, string_groups.classseparator, string_groups.closetag],
-			action (scope) {
+			action (scope, passthrough) {
 				const tag = scope.get_reading_data(syntax.TAG)
 				if (scope.is_reading(syntax.ID)) {
 					tag.attrs.id = scope.buffer
@@ -935,7 +1005,7 @@ const instance = (instanceOptions = {}) => {
 				}
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
-					actions.open_tag(scope, tag)
+					actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.classseparator)) {
 					scope.start_reading(syntax.CLASS)
@@ -974,6 +1044,16 @@ const instance = (instanceOptions = {}) => {
 			}
 		},
 		{
+			string: ['/'],
+			condition(scope) {
+				return !scope.is_reading(syntax.STRING) && scope.is_reading(syntax.TAG, true) && string_is(scope.followingCharacter, string_groups.closetag)
+			},
+			action(scope) {
+				const tag = scope.get_reading_data(syntax.TAG)
+				tag.selfClosing = true
+			}
+		},
+		{
 			reading: syntax.ATTRVAL,
 			string: [string_groups.quote],
 			action(scope){
@@ -985,19 +1065,21 @@ const instance = (instanceOptions = {}) => {
 				return scope.is_reading(syntax.TAGCONTENT, true)
 			},
 			string: [string_groups.closetag],
-			action(scope) {
+			action(scope, passthrough) {
 				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
 
 				scope.stop_reading(syntax.TAGCONTENT, true)
-				actions.open_tag(scope, tag)
 
-				return { setBuffer: '' }
+				return actions.open_tag(scope, tag, passthrough)
 			}
 		},
 		{
 			string: [string_groups.opentag],
 			action(scope) {
 				const child_tag = {attrs:{class:[]}}
+				if (scope.is_reading(syntax.ATTRVAL, true)) {
+					scope.get_reading_data(syntax.ATTRVAL).value = scope.buffer
+				} else
 				if (scope.is_reading(syntax.INDENT)) {
 					child_tag.indent = scope.buffer.length
 					scope.stop_reading(syntax.INDENT)
@@ -1077,8 +1159,6 @@ const instance = (instanceOptions = {}) => {
 					scope.buffer = result.setBuffer
 				if (result.buffer !== undefined)
 					scope.buffer += result.buffer
-				if (result.output !== undefined)
-					scope.output += result.output
 			}
 			return foundCondition
 		}
@@ -1147,7 +1227,8 @@ const instance = (instanceOptions = {}) => {
 		parse,
 		writers,
 		custom: (opts = {}) =>
-			instance(mergeOptions(instanceOptions, opts))
+			instance(mergeOptions(instanceOptions, opts)),
+		add: add_component
 	}
 
 }
@@ -1607,10 +1688,10 @@ return instance({
 		newline: ['\n'],
 		closetag: ['>'],
 		opentag: ['<'],
-		classseparator:['.'],
-		idmarker:['#'],
+		classseparator: ['.'],
+		idmarker: ['#'],
 		quote: ['"', "'"],
-		attrassign:['=',':'],
+		attrassign: ['=',':'],
 		escape: ['\\'],
 	}
 })
