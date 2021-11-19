@@ -700,6 +700,7 @@ new HTMA_Tester()
     expected: `<div attr3="val3"></div>`
   },
   {
+    desc: "render attributes after a property that ends the line",
     input: `
     <div.class-one random-attrname
       onclick="1234"
@@ -708,22 +709,66 @@ new HTMA_Tester()
     expected: `<div class="class-one" random-attrname onclick="1234" title="5678"></div>`
   },
   {
+    desc: "render attributes after a conditional attribute",
     input: `
     <div.instruments-instrument
       <if#true>
         stand-alone
       data-attr=attr-val
     >`,
-		expected: `<div class="instruments-instrument" stand-alone data-attr="attr-val"></div>`
+    expected: `<div class="instruments-instrument" stand-alone data-attr="attr-val"></div>`
   },
   {
+    desc: "render attributes after a false conditional attribute",
     input: `
     <div.instruments-instrument
       <if#false>
         stand-alone
       data-attr=attr-val
     >`,
-		expected: `<div class="instruments-instrument" data-attr="attr-val"></div>`
+    expected: `<div class="instruments-instrument" data-attr="attr-val"></div>`
+  },
+  {
+    desc: "renders all members of an object as attributes of a tag",
+    input: `
+    <div
+      <args#test>
+    >`,
+    expected: `<div a="1234" b="hello" some_attr="some val"></div>`,
+    args: {test:{a:1234,b:'hello',some_attr:'some val'}}
+  },
+  {
+    desc: "renders all members of an object as attributes of a tag if it's the last thing in the tag",
+    input: `
+    <div <args#test>>`,
+    expected: `<div a="1234" b="hello" some_attr="some val"></div>`,
+    args: {test:{a:1234,b:'hello',some_attr:'some val'}}
+  },
+  {
+    desc: "renders all members of the properties as attributes of a tag",
+    input: `
+    <div <args>>`,
+    expected: `<div a="1234" b="hello" some_attr="some val"></div>`,
+    args: {a:1234,b:'hello',some_attr:'some val'}
+  },
+  {
+    desc: "allow other quotes to exist inside quotes",
+    input: `<div test="some complex'value with sub strings' hello">`,
+    expected: `<div test="some complex&apos;value with sub strings&apos; hello"></div>`
+  },
+  {
+    desc: "allow quotes to exist inside tags inside quotes",
+    input: `<div test="<var exp="'subval'" >">`,
+    expected: `<div test="subval"></div>`
+  },
+  {
+    desc: "allow broken tags (spaces) to exist inside values",
+    input: `<div test=<var exp="'subval'" > >`,
+    expected: `<div test="subval"></div>`
+  },
+  {
+    input: `<SelectInput value=sin options='<var exp=["sin","square","saw","triangle","line"] >' label=Form >`,
+    expected: `<SelectInput value="sin" options="sin square saw triangle line" label="Form"></SelectInput>`
   }
 )
 .add(

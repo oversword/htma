@@ -284,7 +284,7 @@ const encodeEntities = (() => {
 })()
 
 class Executor {
-	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String']
+	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console']
 	#keywords = {}
 	constructor() {
 		this.#keywords = Object.fromEntries(this.#keyword_list.map(kw => [kw,1]))
@@ -335,6 +335,13 @@ class Executor {
 	exec (expression, internal_props) {
 		return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), {...internal_props})
 	}
+
+	prep (expression, internal_props) {
+		const exp = this.rebase_vars(expression, 'internal_props')
+		return args => {
+			return Executor.evaluate_expression(exp, { ...internal_props, ...args })
+		}
+	}
 }
 
 class Scope {
@@ -353,6 +360,9 @@ class Scope {
 	#executor
 	exec(expression) {
 		return this.#executor.exec(expression, {...this.#props})
+	}
+	prep(expression) {
+		return this.#executor.prep(expression, {...this.#props})
 	}
 
 
@@ -516,13 +526,14 @@ const syntax = {
 const tags = {
 	IF: 'if',
 	VAR: 'var',
+	ARGS: 'args',
 	ELSE: 'else',
 	ELSEIF: 'elseif',
 	FOR: 'for'
 }
 
 const tag_groups = {
-	system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF],
+	system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS],
 	condition: [tags.IF,tags.ELSE,tags.ELSEIF],
 	else: [tags.ELSE,tags.ELSEIF],
 	if: [tags.IF,tags.ELSEIF]
@@ -561,9 +572,85 @@ const string_is = (str, ...options) =>
 
 const custom_components = {}
 
-const add_component = (name, str) => {
-	custom_components[name] = str
+const add_component = (name, str, o) => {
+	let defaults
+	if (typeof o === 'function')
+		defaults = o
+	else
+	if (typeof o === 'object')
+		defaults = function () { return {...o} }
+	else
+		defaults = function () { return {} }
+	custom_components[name] = {
+		template: str,
+		defaults
+	}
 }
+
+const eventAttrs = [
+	'onabort',
+	'onafterprint',
+	'onbeforeprint',
+	'onbeforeunload',
+	'onblur',
+	'oncanplay',
+	'oncanplaythrough',
+	'onchange',
+	'onclick',
+	'oncopy',
+	'oncuechange',
+	'oncut',
+	'ondblclick',
+	'ondurationchange',
+	'onemptied',
+	'onended',
+	'onerror',
+	'onerror',
+	'onfocus',
+	'onhashchange',
+	'oninput',
+	'oninvalid',
+	'onkeydown',
+	'onkeypress',
+	'onkeyup',
+	'onload',
+	'onloadeddata',
+	'onloadedmetadata',
+	'onloadstart',
+	'onmessage',
+	'onmousedown',
+	'onmousemove',
+	'onmouseout',
+	'onmouseover',
+	'onmouseup',
+	'onmousewheel',
+	'onoffline',
+	'ononline',
+	'onpagehide',
+	'onpageshow',
+	'onpaste',
+	'onpause',
+	'onplay',
+	'onplaying',
+	'onpopstate',
+	'onprogress',
+	'onratechange',
+	'onreset',
+	'onresize',
+	'onsearch',
+	'onseeked',
+	'onseeking',
+	'onselect',
+	'onstalled',
+	'onstorage',
+	'onsubmit',
+	'onsuspend',
+	'ontimeupdate',
+	'onunload',
+	'onvolumechange',
+	'onwaiting',
+	'onwheel',
+]
 
 
 
@@ -576,15 +663,17 @@ const actions = {
 
 		const custom = custom_components[tag.name]
 		if (custom) {
-			let contents
-			let defs = {}
-			if (typeof custom === 'string')
-				contents = custom
-			else {
-				const obj = new custom_components[tag.name]()
-				contents = obj.toString()
-				defs = obj.defaults || defs
-			}
+			const contents = custom.template
+			const defs = new custom.defaults()
+			// let contents
+			// let defs = {}
+			// if (typeof custom === 'string')
+			// 	contents = custom
+			// else {
+			// 	const obj = new custom_components[tag.name]()
+			// 	contents = obj.toString()
+			// 	defs = obj.defaults || defs
+			// }
 
 			scope.writer.nest(
 				contents,
@@ -641,10 +730,21 @@ const actions = {
 				})
 			} else
 			{
-				const exp = tag.attrs.exp
-					? tag.attrs.exp
-					: tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
-				const result = scope.exec(exp)
+				let result
+				if (tag.attrs.fun) {
+					const prepared_func = scope.prep(tag.attrs.fun)
+					result = function () {
+						return prepared_func({ this: this, event })
+					}
+				} else {
+					let exp = false
+					if (tag.attrs.exp)
+						exp = tag.attrs.exp
+					else
+					if (tag.attrs.id)
+						exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+					result = exp ? scope.exec(exp) : scope.props
+				}
 				// console.log(exp, result)
 				if (string_is(tag.name, tags.VAR)) {
 					scope.stop_reading(syntax.TAG)
@@ -665,6 +765,15 @@ const actions = {
 						// scope.buffer += result.toString()
 						if (!scope.is_reading(syntax.CONTENT))
 							scope.start_reading(syntax.CONTENT)
+					}
+				} else if (string_is(tag.name, tags.ARGS))
+				{
+					if (scope.is_reading(syntax.TAGCONTENT, true) && typeof result === 'object') {
+						const par_tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+						par_tag.attrs = {
+							...par_tag.attrs,
+							...result
+						}
 					}
 				} else
 				{
@@ -771,7 +880,6 @@ const instance = (instanceOptions = {}) => {
 			inst: () => '',
 			dump: inst => inst,
 			open: (inst, tag) => {
-				console.log(tag)
 				const attrs = tag.attrs
 					.map(([prop, val]) =>
 						`${prop}${val === true ? '' : `="${encodeEntities(
@@ -814,16 +922,20 @@ const instance = (instanceOptions = {}) => {
 				const newEl = document.createElement(tag.name)
 				tag.attrs
 					.forEach(([ prop, val ]) => {
-						newEl.setAttribute(prop,
-							val === true
-							? ''
-							: (Array.isArray(val)
-								? val
-									.filter(filter_truthy)
-									.filter(filter_unique)
-									.join(' ')
-								: val)
-						)
+						if (eventAttrs.includes(prop) && typeof val === 'function') {
+							newEl.addEventListener(prop.slice(2), val)
+						} else {
+							newEl.setAttribute(prop,
+								val === true
+								? ''
+								: (Array.isArray(val)
+									? val
+										.filter(filter_truthy)
+										.filter(filter_unique)
+										.join(' ')
+									: val)
+								)
+						}
 					})
 				if (!tag.selfClosing)
 					inst.tracker.unshift({ indent: tag.indent, element: newEl })
@@ -1024,7 +1136,7 @@ const instance = (instanceOptions = {}) => {
 			},
 			action(scope){
 				scope.stop_reading(syntax.ESCAPE)
-				scope.buffer += '\\'+scope.currentCharacter
+				return { buffer: '\\'+scope.currentCharacter }
 			}
 		},
 		{
@@ -1037,40 +1149,16 @@ const instance = (instanceOptions = {}) => {
 		},
 		{
 			condition(scope, s) {
-				return scope.is_reading(syntax.STRING, true) && !scope.is_reading(syntax.ESCAPE) && string_is(s, scope.get_reading_data(syntax.STRING).open)
+				return array_sliceAt(scope.reading,
+							({ type }) => type === syntax.STRING)
+						.every	(({ type }) => !string_is(type, syntax.ATTRVAL)) &&
+
+				// scope.is_reading(syntax.STRING, true) &&
+					!scope.is_reading(syntax.ESCAPE) &&
+					string_is(s, scope.get_reading_data(syntax.STRING).open)
 			},
 			action(scope){
 				scope.stop_reading(syntax.STRING, true)
-			}
-		},
-		{
-			string: ['/'],
-			condition(scope) {
-				return !scope.is_reading(syntax.STRING) && scope.is_reading(syntax.TAG, true) && string_is(scope.followingCharacter, string_groups.closetag)
-			},
-			action(scope) {
-				const tag = scope.get_reading_data(syntax.TAG)
-				tag.selfClosing = true
-			}
-		},
-		{
-			reading: syntax.ATTRVAL,
-			string: [string_groups.quote],
-			action(scope){
-				scope.start_reading(syntax.STRING, { open: scope.currentCharacter })
-			}
-		},
-		{
-			condition(scope) {
-				return scope.is_reading(syntax.TAGCONTENT, true)
-			},
-			string: [string_groups.closetag],
-			action(scope, passthrough) {
-				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
-
-				scope.stop_reading(syntax.TAGCONTENT, true)
-
-				return actions.open_tag(scope, tag, passthrough)
 			}
 		},
 		{
@@ -1093,6 +1181,47 @@ const instance = (instanceOptions = {}) => {
 				}
 				scope.start_reading(syntax.TAG, child_tag)
 				scope.start_reading(syntax.TAGNAME)
+			}
+		},
+		{
+			reading: syntax.STRING,
+			action(scope) {
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			string: ['/'],
+			condition(scope) {
+				return !scope.is_reading(syntax.STRING) && scope.is_reading(syntax.TAG, true) && string_is(scope.followingCharacter, string_groups.closetag)
+			},
+			action(scope) {
+				const tag = scope.get_reading_data(syntax.TAG)
+				tag.selfClosing = true
+			}
+		},
+		{
+			reading: syntax.ATTRVAL,
+			string: [string_groups.quote],
+			condition (scope) {
+				const existing_buffer = scope.buffer
+				scope.buffer = existing_buffer
+				return !existing_buffer
+			},
+			action(scope){
+				scope.start_reading(syntax.STRING, { open: scope.currentCharacter })
+			}
+		},
+		{
+			condition(scope) {
+				return scope.is_reading(syntax.TAGCONTENT, true)
+			},
+			string: [string_groups.closetag],
+			action(scope, passthrough) {
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+
+				scope.stop_reading(syntax.TAGCONTENT, true)
+
+				return actions.open_tag(scope, tag, passthrough)
 			}
 		},
 		{
@@ -1186,7 +1315,7 @@ const instance = (instanceOptions = {}) => {
 		} : () => false
 
 		// Get a parser instance for this scope
-		const parse = getParserStep(scope, { debug: subDebugCall, ...options })
+		const parserStep = getParserStep(scope, { ...options, debug: subDebugCall })
 
 		// Zero-th debug step, before any action
 		if (debug_call)
@@ -1194,7 +1323,7 @@ const instance = (instanceOptions = {}) => {
 
 		// Parse every character of the string one by one
 		while (scope.next) {
-			const foundCondition = parse()
+			const foundCondition = parserStep()
 
 			// Record each step of the parsing
 			if (debug_call)
@@ -1240,7 +1369,8 @@ return instance({
 		tags: {
 			elseif: ['elif'],
 			for: ['foreach'],
-			var: ['print']
+			var: ['print'],
+			args: ['attrs']
 		},
 		attributes: {
 			accesskey: [],
