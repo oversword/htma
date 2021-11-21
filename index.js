@@ -13,6 +13,11 @@ const array_sliceAfter = (arr, until) => {
 		return arr
 	return arr.slice(0,i+1)
 }
+const array_partition = (arr, cond) =>
+	arr.reduce(([a,b], item, index, list) =>
+		cond(item, index, list)
+			? [[...a, item], b]
+			: [a, [...b, item]], [[],[]])
 const string_repeat = (s, n) => {
 	let ret = ''
 	for (let i=0; i<n; i++)
@@ -983,7 +988,16 @@ const instance = (instanceOptions = {}) => {
 			inst: () => '',
 			dump: inst => inst,
 			open: (inst, tag) => {
-				const attrs = tag.attrs
+				const [events, others] = array_partition(tag.attrs,
+					([prop, val]) => eventAttrs.includes(prop) && typeof val === 'function')
+				window.__htma__string_writer__event_callbacks = window.__htma__string_writer__event_callbacks || {id:0}
+
+				const mappedEvents = events.map(([prop, val]) => {
+					window.__htma__string_writer__event_callbacks.id++
+					window.__htma__string_writer__event_callbacks[window.__htma__string_writer__event_callbacks.id] = val
+					return [prop, window.__htma__string_writer__event_callbacks.id]
+				})
+				const attrs = (others
 					.map(([prop, val]) =>
 						`${prop}${val === true ? '' : `="${encodeEntities(
 								Array.isArray(val)
@@ -992,7 +1006,11 @@ const instance = (instanceOptions = {}) => {
 									.filter(filter_unique)
 									.join(' ')
 								: val.toString()
-							)}"`}`)
+							)}"`}`))
+					.concat(mappedEvents
+						.map(([prop, id]) =>
+							`${prop}="window.__htma__string_writer__event_callbacks[${id}].call(this)"`))
+
 				return inst + `<${tag.name}${attrs.length ? ` ${attrs.join(' ')}` : ''}${tag.selfClosing ? '/' : ''}>`
 			},
 			close: (inst, tag) =>
