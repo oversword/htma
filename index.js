@@ -7,6 +7,12 @@ const array_sliceAt = (arr, until) => {
 		return arr
 	return arr.slice(0,i)
 }
+const array_sliceAfter = (arr, until) => {
+	const i = arr.findIndex(until)
+	if (i === -1)
+		return arr
+	return arr.slice(0,i+1)
+}
 const string_repeat = (s, n) => {
 	let ret = ''
 	for (let i=0; i<n; i++)
@@ -283,8 +289,28 @@ const encodeEntities = (() => {
 	return encodeEntities
 })()
 
+
+const nest_props = (props, args) =>
+	new Proxy(props, {
+		get (target, prop) {
+			if (prop in args)
+				return args[prop]
+			const got = target[prop]
+			if (typeof got === 'function')
+				return got.bind(target)
+			return got
+		},
+		set (target, prop, val) {
+			if (prop in args)
+				args[prop] = val
+			else
+				target[prop] = val
+			return true
+		}
+	})
+
 class Executor {
-	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console']
+	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null']
 	#keywords = {}
 	constructor() {
 		this.#keywords = Object.fromEntries(this.#keyword_list.map(kw => [kw,1]))
@@ -321,7 +347,7 @@ class Executor {
 
 		// Prefix variables after the first one, do his until there are no more
 		while (replace_feed.length) {
-			const m = replace_feed.match(/(?<=[\[\s&|^\(\+\/\*\-,:])([a-z_]+[a-z0-9_]*)/i)
+			const m = replace_feed.match(/(?<=([\[\s&|^\(\+\/\*\-,:=]|\.\.\.))([a-z_]+[a-z0-9_]*)/i)
 			if (m) repl_match(m)
 			else break
 		}
@@ -333,13 +359,16 @@ class Executor {
 	}
 
 	exec (expression, internal_props) {
-		return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), {...internal_props})
+		return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), internal_props)
+		// return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), {...internal_props})
 	}
 
 	prep (expression, internal_props) {
 		const exp = this.rebase_vars(expression, 'internal_props')
 		return args => {
-			return Executor.evaluate_expression(exp, { ...internal_props, ...args })
+			return Executor.evaluate_expression(exp, nest_props(internal_props, args))
+				// { ...internal_props, ...args })
+			// return Executor.evaluate_expression(exp, { ...internal_props, ...args })
 		}
 	}
 }
@@ -348,21 +377,21 @@ class Scope {
 	#string = ''
 	constructor (string = '', props = {}, executor) {
 		this.#string = string
-		this.#props = {...props}
+		this.#props = props//{...props}
 		this.#executor = executor || new Executor()
 	}
 
 
 	#props = {}
 	get props() {
-		return {...this.#props}
+		return this.#props//{...this.#props}
 	}
 	#executor
 	exec(expression) {
-		return this.#executor.exec(expression, {...this.#props})
+		return this.#executor.exec(expression, this.#props)//{...this.#props})
 	}
 	prep(expression) {
-		return this.#executor.prep(expression, {...this.#props})
+		return this.#executor.prep(expression, this.#props)//{...this.#props})
 	}
 
 
@@ -388,6 +417,9 @@ class Scope {
 	#reading = [{type:syntax.INDENT}]
 	get reading() {
 		return [...this.#reading]
+	}
+	get currentType() {
+		return this.#reading[0] && this.#reading[0].type
 	}
 	start_reading (type, data = false) {
 		this.#reading.unshift({ type, ...(data ? {data} : {}) })
@@ -486,19 +518,23 @@ class Scope {
 		if (typeof newWriter.nest !== 'function')
 			throw new Error(`The writer must implement a 'nest' method that is called for each step of a for loop.`)
 
+
+		const dump_fun = method => (...args) => method(this.#writer_instance, ...args)
+		const mod_fun = method => (...args) => {
+			const result = method(this.#writer_instance, ...args)
+			if (typeof result !== 'undefined')
+				this.#writer_instance = result
+		}
+
 		this.#writer_instance = newWriter.inst()
 		this.#writer = Object.fromEntries(
 			Object.entries(newWriter)
 			.filter(([ name ]) => ['dump','dumpString','open','close','content','nest'].includes(name))
 			.map(([ name, method ]) => [
 				name,
-				(...args) => {
-					const result = method(this.#writer_instance, ...args)
-					if (['dump','dumpString'].includes(name))
-						return result
-					if (typeof result !== 'undefined')
-						this.#writer_instance = result
-				}
+				['dump','dumpString'].includes(name)
+				? dump_fun(method)
+				: mod_fun(method)
 			])
 		)
 	}
@@ -526,6 +562,7 @@ const syntax = {
 const tags = {
 	IF: 'if',
 	VAR: 'var',
+	FUNC: 'func',
 	ARGS: 'args',
 	ELSE: 'else',
 	ELSEIF: 'elseif',
@@ -533,10 +570,11 @@ const tags = {
 }
 
 const tag_groups = {
-	system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS],
+	system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS,tags.FUNC],
 	condition: [tags.IF,tags.ELSE,tags.ELSEIF],
 	else: [tags.ELSE,tags.ELSEIF],
-	if: [tags.IF,tags.ELSEIF]
+	if: [tags.IF,tags.ELSEIF],
+	var: [tags.VAR,tags.FUNC],
 }
 
 const self_closing_tags = {
@@ -572,7 +610,15 @@ const string_is = (str, ...options) =>
 
 const custom_components = {}
 
-const add_component = (name, str, o) => {
+const add_component = (...args) => {
+	let name, str, o
+	if (args.length === 1){
+		const obj = args[0]
+		name = obj.name
+		str = obj.template
+		o = obj
+	}else
+		[name, str, o] = args
 	let defaults
 	if (typeof o === 'function')
 		defaults = o
@@ -657,30 +703,26 @@ const eventAttrs = [
 const actions = {
 	open_tag(scope, tag, passthrough) {
 		const conditional = scope.currentCondition
-		if (conditional === false)
+		if (conditional === false) {
+			if (string_is(tag.name, tag_groups.var))
+				scope.stop_reading(syntax.TAG)
 			return { setBuffer: '' }
+		}
 		let buff = false
 
 		const custom = custom_components[tag.name]
 		if (custom) {
 			const contents = custom.template
 			const defs = new custom.defaults()
-			// let contents
-			// let defs = {}
-			// if (typeof custom === 'string')
-			// 	contents = custom
-			// else {
-			// 	const obj = new custom_components[tag.name]()
-			// 	contents = obj.toString()
-			// 	defs = obj.defaults || defs
-			// }
+			Object.assign(defs, tag.attrs)
 
 			scope.writer.nest(
 				contents,
-				{ ...defs, ...tag.attrs },
-				{ ...passthrough })
+				defs,
+				{ ...passthrough, debug: passthrough.debug(0) })
 
 			scope.stop_reading(syntax.TAG)
+			scope.setCondition(tag.indent, tag.eval)
 			return { setBuffer: '' }
 		} else
 		{
@@ -689,10 +731,10 @@ const actions = {
 			if (string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true)) {
 				tag.eval = false
 			} else
-			if (string_is(tag.name, tags.ELSE)) {
+			if (tag.name === tags.ELSE) {
 				tag.eval = true
 			} else
-			if (string_is(tag.name, tags.FOR)) {
+			if (tag.name === tags.FOR) {
 				let result = []
 				if (tag.attrs.in) {
 					result = scope.exec(tag.attrs.in)
@@ -729,12 +771,20 @@ const actions = {
 					index: scope.index
 				})
 			} else
-			{
+			// {
+			if (tag.name === tags.VAR) {
 				let result
 				if (tag.attrs.fun) {
 					const prepared_func = scope.prep(tag.attrs.fun)
-					result = function () {
-						return prepared_func({ this: this, event })
+					result = function (...args) {
+						let namedArgs = {}
+						if (tag.attrs.args) {
+							namedArgs = Object.fromEntries(
+								tag.attrs.args.split(' ')
+								.map((name, i) => [name,args[i]])
+							)
+						}
+						return prepared_func({ this: this, event, arguments, ...namedArgs })
 					}
 				} else {
 					let exp = false
@@ -745,40 +795,90 @@ const actions = {
 						exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
 					result = exp ? scope.exec(exp) : scope.props
 				}
-				// console.log(exp, result)
-				if (string_is(tag.name, tags.VAR)) {
-					scope.stop_reading(syntax.TAG)
-					// reading attr value? send to buffer
-					scope.buffer = result//.toString()
-					buff = true
-					if (scope.is_reading(syntax.ATTRVAL, true)) {
-						// scope.buffer += result.toString()
-					} else
-					// reading tag content? assume attrname
-					if (scope.is_reading(syntax.TAGCONTENT)) {
-						// scope.buffer += result.toString()
-						scope.start_reading(syntax.ATTR)
-						scope.start_reading(syntax.ATTRNAME)
-					} else
-					// Reading nothing? start reading content
-					{
-						// scope.buffer += result.toString()
-						if (!scope.is_reading(syntax.CONTENT))
-							scope.start_reading(syntax.CONTENT)
-					}
-				} else if (string_is(tag.name, tags.ARGS))
+
+
+				scope.stop_reading(syntax.TAG)
+				// reading attr value? send to buffer
+				scope.buffer = result//.toString()
+				buff = true
+				if (scope.is_reading(syntax.ATTRVAL, true)) {
+				} else
+				// reading tag content? assume attrname
+				if (scope.is_reading(syntax.TAGCONTENT)) {
+					scope.start_reading(syntax.ATTR)
+					scope.start_reading(syntax.ATTRNAME)
+				} else
+				// Reading nothing? start reading content
 				{
-					if (scope.is_reading(syntax.TAGCONTENT, true) && typeof result === 'object') {
+					if (!scope.is_reading(syntax.CONTENT))
+						scope.start_reading(syntax.CONTENT)
+				}
+			} else
+			if (tag.name === tags.FUNC) {
+				let exp = false
+				if (tag.attrs.fun)
+					exp = tag.attrs.fun
+				else
+				if (tag.attrs.exp)
+					exp = tag.attrs.exp
+				else
+				if (tag.attrs.id)
+					exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+
+				const prepared_func = scope.prep(exp)
+				const result = function (...arguments) {
+					let namedArgs = {}
+					if (tag.attrs.args) {
+						namedArgs = Object.fromEntries(
+							tag.attrs.args.split(' ')
+							.map((name, i) => [name,arguments[i]])
+						)
+					}
+					return prepared_func({ this: this, event, arguments, ...namedArgs })
+				}
+
+				scope.stop_reading(syntax.TAG)
+				// reading attr value? send to buffer
+				scope.buffer = result//.toString()
+				buff = true
+				if (scope.is_reading(syntax.ATTRVAL, true)) {
+				} else
+				// reading tag content? assume attrname
+				if (scope.is_reading(syntax.TAGCONTENT)) {
+					scope.start_reading(syntax.ATTR)
+					scope.start_reading(syntax.ATTRNAME)
+				} else
+				// Reading nothing? start reading content
+				{
+					if (!scope.is_reading(syntax.CONTENT))
+						scope.start_reading(syntax.CONTENT)
+				}
+			} else
+			if (tag.name === tags.ARGS) {
+				if (scope.is_reading(syntax.TAGCONTENT, true)) {
+					const exp = tag.attrs.exp
+						? tag.attrs.exp
+						: (tag.attrs.id
+								? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+								: false)
+					const result = exp ? scope.exec(exp) : scope.props
+					if (typeof result === 'object') {
 						const par_tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
 						par_tag.attrs = {
 							...par_tag.attrs,
 							...result
 						}
 					}
-				} else
-				{
-					tag.eval = string_is(tag.name, tag_groups.condition) ? Boolean(result) : result
 				}
+			} else // condition
+			{
+				const exp = tag.attrs.exp
+					? tag.attrs.exp
+					: (tag.attrs.id
+							? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+							: 'undefined')
+				const result = scope.exec(exp)
+				tag.eval = Boolean(result)
 			}
 		}
 		if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
@@ -825,11 +925,10 @@ const actions = {
 			loop.items.map(([ key, val ]) =>
 				scope.writer.nest(
 					contents,
-					{
-						...scope.props,
+					nest_props(scope.props, {
 						[loop.varname]: val,
 						...(loop.keyname ? {[loop.keyname]: key } : {})
-					},
+					}),
 					{ ...passthrough }))
 		scope.buffer = string_repeat(' ', loop.indent)
 		scope.stop_reading(syntax.LOOP)
@@ -847,6 +946,10 @@ const getConditionMatcher = scope =>
 			(!condition || condition(scope, thisCharacter))
 		)
 	}
+const getConditionMatcherQuick = scope =>
+	({ reading, string, condition }) =>
+			(!condition || condition(scope, scope.currentCharacter))
+
 const defaultAction = scope => ({ buffer: scope.currentCharacter })
 
 
@@ -1000,7 +1103,7 @@ const instance = (instanceOptions = {}) => {
 					loop.indent += 1
 				}
 				if (!scope.followingCharacter || (!string_is(scope.followingCharacter, string_groups.indent, string_groups.newline) && loop.indent <= tag.indent)) {
-					actions.render_loop(scope, loop, { debug: debug(loop.index), ...passthrough })
+					actions.render_loop(scope, loop, { ...passthrough, debug: debug(loop.index) })
 				} else {
 					return { buffer: scope.currentCharacter }
 				}
@@ -1016,9 +1119,12 @@ const instance = (instanceOptions = {}) => {
 				const finalName = custom_components[canonName] ? canonName : canonName.toLowerCase()
 				tag.name = tagAliases[tagName] || tagName
 				scope.stop_reading(syntax.TAGNAME)
+				if (!string_is(tag.name, tag_groups.else)) {
+					scope.setCondition(tag.indent, tag.eval)
+				}
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
-					actions.open_tag(scope, tag, passthrough)
+					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.idmarker)) {
 					scope.start_reading(syntax.ID)
@@ -1053,7 +1159,7 @@ const instance = (instanceOptions = {}) => {
 					scope.stop_reading(syntax.TAGCONTENT, true)
 					if (scope.currentCondition)
 						tag.attrs[tag.current_attr] = true
-					actions.open_tag(scope, tag, passthrough)
+					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.attrassign)) {
 					scope.start_reading(syntax.ATTRVAL, {value:''})
@@ -1117,7 +1223,7 @@ const instance = (instanceOptions = {}) => {
 				}
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
-					actions.open_tag(scope, tag, passthrough)
+					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.classseparator)) {
 					scope.start_reading(syntax.CLASS)
@@ -1131,7 +1237,7 @@ const instance = (instanceOptions = {}) => {
 			},
 		},
 		{
-			condition(scope, s) {
+			condition(scope) {
 				return scope.is_reading(syntax.STRING, true) && scope.is_reading(syntax.ESCAPE)
 			},
 			action(scope){
@@ -1151,11 +1257,11 @@ const instance = (instanceOptions = {}) => {
 			condition(scope, s) {
 				return array_sliceAt(scope.reading,
 							({ type }) => type === syntax.STRING)
-						.every	(({ type }) => !string_is(type, syntax.ATTRVAL)) &&
+						.every	(({ type }) => type !== syntax.ATTRVAL) &&
 
 				// scope.is_reading(syntax.STRING, true) &&
 					!scope.is_reading(syntax.ESCAPE) &&
-					string_is(s, scope.get_reading_data(syntax.STRING).open)
+					s === scope.get_reading_data(syntax.STRING).open
 			},
 			action(scope){
 				scope.stop_reading(syntax.STRING, true)
@@ -1190,7 +1296,7 @@ const instance = (instanceOptions = {}) => {
 			}
 		},
 		{
-			string: ['/'],
+			string: [string_groups.selfclose],
 			condition(scope) {
 				return !scope.is_reading(syntax.STRING) && scope.is_reading(syntax.TAG, true) && string_is(scope.followingCharacter, string_groups.closetag)
 			},
@@ -1274,12 +1380,58 @@ const instance = (instanceOptions = {}) => {
 			}
 		}
 	]
+	const all_strings = [].concat(...Object.values(string_groups))
 
+
+
+	const filter_conditions = syn =>
+		Object.fromEntries(
+			[[
+				'default',
+				array_sliceAfter(
+					conditions.filter(({ reading, string, condition }) =>
+						(!reading || reading === syn) &&
+						(!string || !all_strings.some(ch => string_is(ch, ...string)))
+					),
+					({ condition }) => !condition
+				)
+			]].concat(
+				all_strings
+				.map(thisCharacter => [
+					thisCharacter,
+					array_sliceAfter(
+						conditions.filter(({ reading, string, condition }) =>
+							(!reading || reading === syn) &&
+							(!string || string_is(thisCharacter, ...string))),
+						({ condition }) => !condition
+					)
+				])
+			)
+		)
+
+	const quick_conditions =
+		Object.fromEntries(
+			[[
+				'default',
+				filter_conditions(undefined)
+			]].concat(
+				Object.values(syntax)
+					.map(syn => [
+						syn,
+						filter_conditions(syn)
+					])
+			)
+		)
 
 	const getParserStep = (scope, passthrough) => {
-		const matchingCondition = getConditionMatcher(scope)
-		return () => {
-			const foundCondition = conditions.find(matchingCondition)
+		const matchingConditionQuick = getConditionMatcherQuick(scope)
+		const parserStepCall = () => {
+			const ct = scope.currentType || 'default'
+			const foundCondition = (
+					quick_conditions[ct][scope.currentCharacter] ||
+					quick_conditions[ct].default
+				).find(matchingConditionQuick)
+
 			const action = (foundCondition ? foundCondition.action : false) || defaultAction
 			const result = action(scope, passthrough)
 			scope.reserve += scope.currentCharacter
@@ -1291,6 +1443,7 @@ const instance = (instanceOptions = {}) => {
 			}
 			return foundCondition
 		}
+		return parserStepCall
 	}
 
 	const parse = (str = '', args = {}, options = {}) => {
@@ -1370,7 +1523,8 @@ return instance({
 			elseif: ['elif'],
 			for: ['foreach'],
 			var: ['print'],
-			args: ['attrs']
+			args: ['attrs'],
+			func: ['funct','fun','call','bind']
 		},
 		attributes: {
 			accesskey: [],
@@ -1465,8 +1619,8 @@ return instance({
 				value: []
 			},
 			canvas: {
-				height: [],
-				width: []
+				height: ['h'],
+				width: ['w']
 			},
 			caption: {
 				align: []
@@ -1502,10 +1656,10 @@ return instance({
 				open: []
 			},
 			embed: {
-				height: [],
+				height: ['h'],
 				src: [],
 				type: [],
-				width: []
+				width: ['w']
 			},
 			fieldset: {
 				disabled: [],
@@ -1537,7 +1691,7 @@ return instance({
 				align: [],
 				allow: [],
 				csp: [],
-				height: [],
+				height: ['h'],
 				importance: [],
 				loading: [],
 				name: [],
@@ -1545,7 +1699,7 @@ return instance({
 				sandbox: [],
 				src: [],
 				srcdoc: [],
-				width: []
+				width: ['w']
 			},
 			img: {
 				align: [],
@@ -1553,7 +1707,7 @@ return instance({
 				border: [],
 				crossorigin: [],
 				decoding: [],
-				height: [],
+				height: ['h'],
 				importance: [],
 				intrinsicsize: [],
 				ismap: [],
@@ -1563,7 +1717,7 @@ return instance({
 				src: [],
 				srcset: [],
 				usemap: [],
-				width: []
+				width: ['w']
 			},
 			input: {
 				accept: [],
@@ -1580,7 +1734,7 @@ return instance({
 				formmethod: [],
 				formnovalidate: [],
 				formtarget: [],
-				height: [],
+				height: ['h'],
 				list: [],
 				max: [],
 				maxlength: [],
@@ -1598,7 +1752,7 @@ return instance({
 				type: [],
 				usemap: [],
 				value: [],
-				width: []
+				width: ['w']
 			},
 			ins: {
 				cite: [],
@@ -1660,11 +1814,11 @@ return instance({
 				border: [],
 				data: [],
 				form: [],
-				height: [],
+				height: ['h'],
 				name: [],
 				type: [],
 				usemap: [],
-				width: []
+				width: ['w']
 			},
 			ol: {
 				reversed: [],
@@ -1803,13 +1957,13 @@ return instance({
 				buffered: [],
 				controls: [],
 				crossorigin: [],
-				height: [],
+				height: ['h'],
 				loop: [],
 				muted: [],
 				poster: [],
 				preload: [],
 				src: [],
-				width: []
+				width: ['w']
 			},
 		}
 	},
@@ -1823,6 +1977,7 @@ return instance({
 		quote: ['"', "'"],
 		attrassign: ['=',':'],
 		escape: ['\\'],
+		selfclose: ['/'],
 	}
 })
 

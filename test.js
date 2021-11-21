@@ -363,7 +363,17 @@ class HTMA_Tester {
   }
 }
 
-
+htma.add(class TestComponent {
+  static template = `
+    <div.test-component>
+      <var#attr>
+      <for#i in:list>
+        <var#i>
+      <var#rettr()>`
+  attr = ''
+  list = []
+  rettr = () => ''
+})
 
 
 new HTMA_Tester()
@@ -767,8 +777,44 @@ new HTMA_Tester()
     expected: `<div test="subval"></div>`
   },
   {
+    desc: "render any array attribute like classes",
     input: `<SelectInput value=sin options='<var exp=["sin","square","saw","triangle","line"] >' label=Form >`,
     expected: `<SelectInput value="sin" options="sin square saw triangle line" label="Form"></SelectInput>`
+  },
+  {
+    desc: "render attributes after a falsey attribute condition that ends by printing a var",
+    input: `
+    <select.select-input-select
+      <if#name>
+        name=<var#name>
+      onchange=<var#test>
+    >`,
+    expected:`<select class="select-input-select" onchange="4"></select>`,
+    args: {test:4,name:0}
+  },
+  {
+    desc: "render attributes after a true attribute condition that ends by printing a var",
+    input: `
+    <select.select-input-select
+      <if#name>
+        name=<var#name>
+      onchange=<var#test>
+    >`,
+    expected:`<select class="select-input-select" name="1" onchange="4"></select>`,
+    args: {test:4,name:1}
+  },
+  {
+    desc: "render atrributes below conditions but in other tags",
+    input: `
+    <div.step >
+      <div.step-volume>
+        <if#false>
+          <span>
+            hello
+        <dial-input
+          attr1=testy
+        >`,
+    expected: `<div class="step"><div class="step-volume"><dial-input attr1="testy"></dial-input></div></div>`
   }
 )
 .add(
@@ -1005,6 +1051,43 @@ new HTMA_Tester()
       set: [1,2,3]
     },
     expected: `a1a2a3`
+  },
+)
+.add(
+  {
+    desc: `render a component`,
+    input: `<TestComponent>`,
+    expected: `<div class="test-component"></div>`
+  },
+  {
+    desc: `pass attributes through to the component and use them properly`,
+    input: `<TestComponent attr=testing >`,
+    expected: `<div class="test-component">testing</div>`
+  },
+  {
+    desc: `pass attributes as variables through to the component and use them properly`,
+    input: `<TestComponent list=<var#items> rettr=<var#getterFunc> >`,
+    expected: `<div class="test-component">hihohehagotten</div>`,
+    args: {
+      items: ['hi','ho','he','ha'],
+      getterFunc: () => 'gotten'
+    }
+  },
+  {
+    desc: "render a component in a complex situation",
+    input: `
+    <div.step >
+      <div.step-volume>
+        <if#false>
+          <span>
+            hello
+        <dial-input>
+      <div.step-form >
+        <TestComponent
+          attr="hello"
+        >
+        <div.hello>`,
+    expected: `<div class="step"><div class="step-volume"><dial-input></dial-input></div><div class="step-form"><div class="test-component">hello</div><div class="hello"></div></div></div>`
   },
 )
 .add(
