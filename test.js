@@ -391,13 +391,15 @@ new HTMA_Tester()
     <img>
     `,
     args: {},
-    expected: `<input/><img/>`
+    expected: `<input/><img/>`,
+    expectedDOM: `<input><img>`
   },
   {
     desc: "render a tag that is written as self closing without a close tag",
     input: `<div/>`,
     args: {},
-    expected: `<div/>`
+    expected: `<div/>`,
+    expectedDOM: `<div></div>`
   },
   {
     desc: "render the contents of a tag inside the tag",
@@ -624,7 +626,8 @@ new HTMA_Tester()
         selected
     >`,
     args: {},
-    expected: `<div selected></div>`
+    expected: `<div selected></div>`,
+    expectedDOM: `<div selected=""></div>`
   },
   {
     desc: "not render a property in a false condition",
@@ -716,7 +719,8 @@ new HTMA_Tester()
       onclick="1234"
       title="5678"
     >`,
-    expected: `<div class="class-one" random-attrname onclick="1234" title="5678"></div>`
+    expected: `<div class="class-one" random-attrname onclick="1234" title="5678"></div>`,
+    expectedDOM: `<div class="class-one" random-attrname="" onclick="1234" title="5678"></div>`
   },
   {
     desc: "render attributes after a conditional attribute",
@@ -726,7 +730,8 @@ new HTMA_Tester()
         stand-alone
       data-attr=attr-val
     >`,
-    expected: `<div class="instruments-instrument" stand-alone data-attr="attr-val"></div>`
+    expected: `<div class="instruments-instrument" stand-alone data-attr="attr-val"></div>`,
+    expectedDOM: `<div class="instruments-instrument" stand-alone="" data-attr="attr-val"></div>`
   },
   {
     desc: "render attributes after a false conditional attribute",
@@ -764,7 +769,8 @@ new HTMA_Tester()
   {
     desc: "allow other quotes to exist inside quotes",
     input: `<div test="some complex'value with sub strings' hello">`,
-    expected: `<div test="some complex&apos;value with sub strings&apos; hello"></div>`
+    expected: `<div test="some complex&apos;value with sub strings&apos; hello"></div>`,
+    expectedDOM: `<div test="some complex'value with sub strings' hello"></div>`
   },
   {
     desc: "allow quotes to exist inside tags inside quotes",
@@ -778,8 +784,8 @@ new HTMA_Tester()
   },
   {
     desc: "render any array attribute like classes",
-    input: `<SelectInput value=sin options='<var exp=["sin","square","saw","triangle","line"] >' label=Form >`,
-    expected: `<SelectInput value="sin" options="sin square saw triangle line" label="Form"></SelectInput>`
+    input: `<selectinput value=sin options='<var exp=["sin","square","saw","triangle","line"] >' label=Form >`,
+    expected: `<selectinput value="sin" options="sin square saw triangle line" label="Form"></selectinput>`
   },
   {
     desc: "render attributes after a falsey attribute condition that ends by printing a var",
@@ -1214,6 +1220,13 @@ new HTMA_Tester()
     expected: `<div class="dial-input-increment" style="transform:rotate(4deg);"></div>`
   }
 )
+
+/*
+.variate((testcase) => [
+  {...testcase,writeMode:'string'},
+  {...testcase,writeMode:'dom',desc:(testcase.desc||'')+' DOM',...(testcase.expectedDOM ? {expected:testcase.expectedDOM} : {})},
+])
+//*/
 /*
 .variate((testcase) => {
   const variations = [
@@ -1280,11 +1293,5 @@ new HTMA_Tester()
     }))
   ]
 })
-//*/
-/*
-.variate((testcase) => [
-  {...testcase,writeMode:'string'},
-  {...testcase,writeMode:'dom',desc:(testcase.desc||'')+' DOM'},
-])
 //*/
 .exec()

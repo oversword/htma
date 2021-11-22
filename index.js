@@ -352,7 +352,7 @@ class Executor {
 
 		// Prefix variables after the first one, do his until there are no more
 		while (replace_feed.length) {
-			const m = replace_feed.match(/(?<=([\[\s&|^\(\+\/\*\-,:=]|\.\.\.))([a-z_]+[a-z0-9_]*)/i)
+			const m = replace_feed.match(/(?<=([\[\s&|^\(\+\/\*\-,:=!]|\.\.\.))([a-z_]+[a-z0-9_]*)/i)
 			if (m) repl_match(m)
 			else break
 		}
@@ -709,8 +709,13 @@ const actions = {
 	open_tag(scope, tag, passthrough) {
 		const conditional = scope.currentCondition
 		if (conditional === false) {
-			if (string_is(tag.name, tag_groups.var))
+			if (string_is(tag.name, tag_groups.var)) {
 				scope.stop_reading(syntax.TAG)
+				if (tag.indent !== undefined) {
+					scope.start_reading(syntax.INDENT)
+					return { setBuffer: string_repeat(' ', tag.indent) }
+				}
+			}
 			return { setBuffer: '' }
 		}
 		let buff = false
@@ -1137,8 +1142,9 @@ const instance = (instanceOptions = {}) => {
 				const finalName = custom_components[canonName] ? canonName : canonName.toLowerCase()
 				tag.name = tagAliases[tagName] || tagName
 				scope.stop_reading(syntax.TAGNAME)
-				if (!string_is(tag.name, tag_groups.else)) {
-					scope.setCondition(tag.indent, tag.eval)
+				if (!string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true) !== undefined) {
+					// console.log(tag, tag.eval)
+					scope.setCondition(tag.indent, undefined)
 				}
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
