@@ -24,17 +24,11 @@ const string_repeat = (s, n) => {
 		ret += s
 	return ret
 }
+const string_is = (str, ...options) =>
+	[].concat(...options.map(option => Array.isArray(option) ? option : [option]))
+		.includes(str)
 const filter_unique = (item, index, list) => list.indexOf(item) === index
 const filter_truthy = val => val
-
-const invertAliasIndex = aliasIndex =>
-	Object
-		.entries(aliasIndex)
-		.reduce((acc, [ canon, aliases ]) =>
-			aliases
-				.reduce((a, alias) =>
-					({ ...a, [alias]: canon }), acc),
-			{})
 
 const encodeEntities = (() => {
 	const HTMLEntities = {
@@ -294,6 +288,14 @@ const encodeEntities = (() => {
 	return encodeEntities
 })()
 
+const invertAliasIndex = aliasIndex =>
+	Object
+		.entries(aliasIndex)
+		.reduce((acc, [ canon, aliases ]) =>
+			aliases
+				.reduce((a, alias) =>
+					({ ...a, [alias]: canon }), acc),
+			{})
 
 const nest_props = (props, args) =>
 	new Proxy(props, {
@@ -419,7 +421,7 @@ class Scope {
 	}
 
 
-	#reading = [{type:syntax.INDENT}]
+	#reading = []
 	get reading() {
 		return [...this.#reading]
 	}
@@ -430,29 +432,34 @@ class Scope {
 		this.#reading.unshift({ type, ...(data ? {data} : {}) })
 	}
 	stop_reading (type, force = false) {
-		const i = this.#reading.findIndex(e => e.type === type)
+		const types = Array.isArray(type) ? type : [type]
+		const i = this.#reading.findIndex(e => types.includes(e.type))
+		const typ = this.#reading[i].type
 		if (i === -1 && !force)
-			throw new Error(`${type} cannot be stopped as it is not currently being read.`)
+			throw new Error(`${typ} cannot be stopped as it is not currently being read.`)
 		if (i !== 0 && !force)
-			throw new Error(`${type} cannot be stopped as it is not the most recent item being read, use force=true if you want this to stop anyway.`)
+			throw new Error(`${typ} cannot be stopped as it is not the most recent item being read, use force=true if you want this to stop anyway.`)
 		this.#reading = this.#reading.slice(i+1)
 	}
 	is_reading (type, parents = false) {
+		const types = Array.isArray(type) ? type : [type]
 		if (parents)
-			return this.#reading.some(e => e.type === type)
-		return this.#reading[0] && this.#reading[0].type === type
+			return this.#reading.some(e => types.includes(e.type))
+		return this.#reading[0] && types.includes(this.#reading[0].type)
 	}
 	get_all_reading_data(type = false, until = false) {
+		const types = Array.isArray(type) ? type : [type]
 		const set = type === false
 			? this.#reading
-			: this.#reading.filter(e => e.type === type)
+			: this.#reading.filter(e => types.includes(e.type))
 		const data = set.map(({ data }) => data || {})
 		if (until === false)
 			return data
 		return array_sliceAt(data, until)
 	}
 	get_reading_data(type, check = false) {
-		const e = this.#reading.find(e => e.type === type && (!check || check(e.data || {})))
+		const types = Array.isArray(type) ? type : [type]
+		const e = this.#reading.find(e => types.includes(e.type) && (!check || check(e.data || {})))
 		return (e && e.data) || {}
 	}
 	get reading_data () {
@@ -514,14 +521,14 @@ class Scope {
 			throw new Error(`The writer must implement an 'inst' method that creates a new object to write data to.`)
 		if (typeof newWriter.dump !== 'function')
 			throw new Error(`The writer must implement a 'dump' method that outputs the result after the writing is complete.`)
-		if (typeof newWriter.open !== 'function')
-			throw new Error(`The writer must implement an 'open' method that is called when a tag is opened.`)
-		if (typeof newWriter.close !== 'function')
-			throw new Error(`The writer must implement a 'close' method that is called when a tag is closed.`)
-		if (typeof newWriter.content !== 'function')
-			throw new Error(`The writer must implement a 'content' method that is called when plain text content is encountered.`)
-		if (typeof newWriter.nest !== 'function')
-			throw new Error(`The writer must implement a 'nest' method that is called for each step of a for loop.`)
+		// if (typeof newWriter.open !== 'function')
+		// 	throw new Error(`The writer must implement an 'open' method that is called when a tag is opened.`)
+		// if (typeof newWriter.close !== 'function')
+		// 	throw new Error(`The writer must implement a 'close' method that is called when a tag is closed.`)
+		// if (typeof newWriter.content !== 'function')
+		// 	throw new Error(`The writer must implement a 'content' method that is called when plain text content is encountered.`)
+		// if (typeof newWriter.nest !== 'function')
+		// 	throw new Error(`The writer must implement a 'nest' method that is called for each step of a for loop.`)
 
 
 		const dump_fun = method => (...args) => method(this.#writer_instance, ...args)
@@ -534,7 +541,7 @@ class Scope {
 		this.#writer_instance = newWriter.inst()
 		this.#writer = Object.fromEntries(
 			Object.entries(newWriter)
-			.filter(([ name ]) => ['dump','dumpString','open','close','content','nest'].includes(name))
+			.filter(([ name ]) => ['dump','dumpString','open','close','content','nest','write'].includes(name))
 			.map(([ name, method ]) => [
 				name,
 				['dump','dumpString'].includes(name)
@@ -547,69 +554,6 @@ class Scope {
 		return {...this.#writer}
 	}
 }
-
-const syntax = {
-	CONTENT: 'content',
-	INDENT: 'indent',
-	TAG: 'tag',
-	TAGNAME: 'tagname',
-	CLASS: 'class',
-	ID: 'id',
-	TAGCONTENT: 'tagcontent',
-	ATTR: 'attribute',
-	ATTRNAME: 'attributename',
-	ATTRVAL: 'attributevalue',
-	STRING: 'string',
-	ESCAPE: 'escape',
-	LOOP: 'loop'
-}
-
-const tags = {
-	IF: 'if',
-	VAR: 'var',
-	FUNC: 'func',
-	ARGS: 'args',
-	ELSE: 'else',
-	ELSEIF: 'elseif',
-	FOR: 'for'
-}
-
-const tag_groups = {
-	system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS,tags.FUNC],
-	condition: [tags.IF,tags.ELSE,tags.ELSEIF],
-	else: [tags.ELSE,tags.ELSEIF],
-	if: [tags.IF,tags.ELSEIF],
-	var: [tags.VAR,tags.FUNC],
-}
-
-const self_closing_tags = {
-	area: true,
-	base: true,
-	br: true,
-	col: true,
-	command: true,
-	embed: true,
-	hr: true,
-	img: true,
-	input: true,
-	keygen: true,
-	link: true,
-	menuitem: true,
-	meta: true,
-	param: true,
-	source: true,
-	track: true,
-	wbr: true
-}
-
-
-const validAttributes = ([ prop, val ]) =>
-	val && !(Array.isArray(val) && val.length === 0)
-
-
-const string_is = (str, ...options) =>
-	[].concat(...options.map(option => Array.isArray(option) ? option : [option]))
-		.includes(str)
 
 
 
@@ -638,330 +582,27 @@ const add_component = (...args) => {
 	}
 }
 
-const eventAttrs = [
-	'onabort',
-	'onafterprint',
-	'onbeforeprint',
-	'onbeforeunload',
-	'onblur',
-	'oncanplay',
-	'oncanplaythrough',
-	'onchange',
-	'onclick',
-	'oncopy',
-	'oncuechange',
-	'oncut',
-	'ondblclick',
-	'ondurationchange',
-	'onemptied',
-	'onended',
-	'onerror',
-	'onerror',
-	'onfocus',
-	'onhashchange',
-	'oninput',
-	'oninvalid',
-	'onkeydown',
-	'onkeypress',
-	'onkeyup',
-	'onload',
-	'onloadeddata',
-	'onloadedmetadata',
-	'onloadstart',
-	'onmessage',
-	'onmousedown',
-	'onmousemove',
-	'onmouseout',
-	'onmouseover',
-	'onmouseup',
-	'onmousewheel',
-	'onoffline',
-	'ononline',
-	'onpagehide',
-	'onpageshow',
-	'onpaste',
-	'onpause',
-	'onplay',
-	'onplaying',
-	'onpopstate',
-	'onprogress',
-	'onratechange',
-	'onreset',
-	'onresize',
-	'onsearch',
-	'onseeked',
-	'onseeking',
-	'onselect',
-	'onstalled',
-	'onstorage',
-	'onsubmit',
-	'onsuspend',
-	'ontimeupdate',
-	'onunload',
-	'onvolumechange',
-	'onwaiting',
-	'onwheel',
-]
 
 
 
-const actions = {
-	open_tag(scope, tag, passthrough) {
-		const conditional = scope.currentCondition
-		if (conditional === false) {
-			if (string_is(tag.name, tag_groups.var)) {
-				scope.stop_reading(syntax.TAG)
-				if (tag.indent !== undefined) {
-					scope.start_reading(syntax.INDENT)
-					return { setBuffer: string_repeat(' ', tag.indent) }
-				}
-			}
-			return { setBuffer: '' }
-		}
-		let buff = false
-
-		const custom = custom_components[tag.name]
-		if (custom) {
-			const contents = custom.template
-			const defs = new custom.defaults()
-			Object.assign(defs, tag.attrs)
-
-			scope.writer.nest(
-				contents,
-				defs,
-				{ ...passthrough, debug: passthrough.debug(0) })
-
-			scope.stop_reading(syntax.TAG)
-			scope.setCondition(tag.indent, tag.eval)
-			return { setBuffer: '' }
-		} else
-		{
-
-		if (string_is(tag.name, tag_groups.system)) {
-			if (string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true)) {
-				tag.eval = false
-			} else
-			if (tag.name === tags.ELSE) {
-				tag.eval = true
-			} else
-			if (tag.name === tags.FOR) {
-				let result = []
-				if (tag.attrs.in) {
-					result = scope.exec(tag.attrs.in)
-				} else
-				if (tag.attrs.to) {
-					const start = tag.attrs.from ? scope.exec(tag.attrs.from) : 0
-					const range = scope.exec(tag.attrs.to) - start
-					const inc = tag.attrs.inc ? scope.exec(tag.attrs.inc) : Math.sign(range)
-					if (Math.sign(range) !== Math.sign(inc)) {
-						throw new Error('Infinite loop detected')
-					}
-					result = Array(Math.ceil(range/inc)).fill(0).map((v,k) => start+(k*inc))
-				}
-
-				if (typeof result === 'string') {
-					result = [...result]
-				}
-				if (Array.isArray(result)) {
-					result = result.map((val, index) => [ index, val ])
-				} else
-				if (typeof result === 'object') {
-					result = Object.entries(result)
-				} else
-				{
-					throw new Error(`This structure is not iterable`)
-				}
-
-
-				scope.start_reading(syntax.LOOP, {
-					varname:tag.attrs.id,
-					keyname:tag.attrs.key,
-					items:result,
-					indent: 0,
-					index: scope.index
-				})
-			} else
-			// {
-			if (tag.name === tags.VAR) {
-				let result
-				if (tag.attrs.fun) {
-					const prepared_func = scope.prep(tag.attrs.fun)
-					result = function (...args) {
-						let namedArgs = {}
-						if (tag.attrs.args) {
-							namedArgs = Object.fromEntries(
-								tag.attrs.args.split(' ')
-								.map((name, i) => [name,args[i]])
-							)
-						}
-						return prepared_func({ this: this, event, arguments, ...namedArgs })
-					}
-				} else {
-					let exp = false
-					if (tag.attrs.exp)
-						exp = tag.attrs.exp
-					else
-					if (tag.attrs.id)
-						exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
-					result = exp ? scope.exec(exp) : scope.props
-				}
-
-
-				scope.stop_reading(syntax.TAG)
-				// reading attr value? send to buffer
-				scope.buffer = result//.toString()
-				buff = true
-				if (scope.is_reading(syntax.ATTRVAL, true)) {
-				} else
-				// reading tag content? assume attrname
-				if (scope.is_reading(syntax.TAGCONTENT)) {
-					scope.start_reading(syntax.ATTR)
-					scope.start_reading(syntax.ATTRNAME)
-				} else
-				// Reading nothing? start reading content
-				{
-					if (!scope.is_reading(syntax.CONTENT))
-						scope.start_reading(syntax.CONTENT)
-				}
-			} else
-			if (tag.name === tags.FUNC) {
-				let exp = false
-				if (tag.attrs.fun)
-					exp = tag.attrs.fun
-				else
-				if (tag.attrs.exp)
-					exp = tag.attrs.exp
-				else
-				if (tag.attrs.id)
-					exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
-
-				const prepared_func = scope.prep(exp)
-				const result = function (...arguments) {
-					let namedArgs = {}
-					if (tag.attrs.args) {
-						namedArgs = Object.fromEntries(
-							tag.attrs.args.split(' ')
-							.map((name, i) => [name,arguments[i]])
-						)
-					}
-					return prepared_func({ this: this, event, arguments, ...namedArgs })
-				}
-
-				scope.stop_reading(syntax.TAG)
-				// reading attr value? send to buffer
-				scope.buffer = result//.toString()
-				buff = true
-				if (scope.is_reading(syntax.ATTRVAL, true)) {
-				} else
-				// reading tag content? assume attrname
-				if (scope.is_reading(syntax.TAGCONTENT)) {
-					scope.start_reading(syntax.ATTR)
-					scope.start_reading(syntax.ATTRNAME)
-				} else
-				// Reading nothing? start reading content
-				{
-					if (!scope.is_reading(syntax.CONTENT))
-						scope.start_reading(syntax.CONTENT)
-				}
-			} else
-			if (tag.name === tags.ARGS) {
-				if (scope.is_reading(syntax.TAGCONTENT, true)) {
-					const exp = tag.attrs.exp
-						? tag.attrs.exp
-						: (tag.attrs.id
-								? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
-								: false)
-					const result = exp ? scope.exec(exp) : scope.props
-					if (typeof result === 'object') {
-						const par_tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
-						par_tag.attrs = {
-							...par_tag.attrs,
-							...result
-						}
-					}
-				}
-			} else // condition
-			{
-				const exp = tag.attrs.exp
-					? tag.attrs.exp
-					: (tag.attrs.id
-							? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
-							: 'undefined')
-				const result = scope.exec(exp)
-				tag.eval = Boolean(result)
-			}
-		}
-		if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
-			const selfClosing = tag.selfClosing || self_closing_tags[tag.name] || false
-			scope.writer.open({
-				name: tag.name,
-				indent: tag.indent,
-				selfClosing,
-				attrs: Object
-					.entries(tag.attrs)
-					.filter(validAttributes)
-			})
-			if (selfClosing)
-				scope.stop_reading(syntax.TAG, true)
-		}
-		if (string_is(tag.name, tag_groups.condition) || scope.condition(tag.indent, true) !== undefined) {
-			scope.setCondition(tag.indent, tag.eval)
-		}
-
-		}
-		if (!buff)
-			return { setBuffer: '' }
-	},
-	close_tags(scope, min_indent) {
-		const siblings_and_nephews = scope.get_all_reading_data(syntax.TAG, ({ indent }) => indent < min_indent)
-		siblings_and_nephews
-			.forEach(tag => {
-				const { indent, name } = tag
-				const print_close = name &&
-					scope.condition(indent) !== false &&
-					!string_is(name, tag_groups.system)
-
-				scope.stop_reading(syntax.TAG, true)
-				if (print_close && scope.currentCondition !== false)
-					scope.writer.close({
-						name: tag.name,
-						indent: tag.indent,
-					})
-			})
-	},
-	render_loop(scope, loop, passthrough) {
-		const contents = scope.buffer+scope.currentCharacter
-		if (scope.currentCondition !== false)
-			loop.items.map(([ key, val ]) =>
-				scope.writer.nest(
-					contents,
-					nest_props(scope.props, {
-						[loop.varname]: val,
-						...(loop.keyname ? {[loop.keyname]: key } : {})
-					}),
-					{ ...passthrough }))
-		scope.buffer = string_repeat(' ', loop.indent)
-		scope.stop_reading(syntax.LOOP)
-		scope.start_reading(syntax.INDENT)
-	}
-}
-
-
-const getConditionMatcher = scope =>
-	({ reading, string, condition }) => {
-		const thisCharacter = scope.currentCharacter
-		return (
-			(!reading || scope.is_reading(reading)) &&
-			(!string || string_is(thisCharacter, ...string)) &&
-			(!condition || condition(scope, thisCharacter))
-		)
-	}
-const getConditionMatcherQuick = scope =>
-	({ reading, string, condition }) =>
-			(!condition || condition(scope, scope.currentCharacter))
-
-const defaultAction = scope => ({ buffer: scope.currentCharacter })
-
+// const parse_calc = c => {
+// 	return c
+// }
+// const parse_pos = pos => {
+// 	const parts = pos.split(/\s*;\s*/)
+// 	const r = parts
+// 		.filter(filter_truthy)
+// 		.map(part => {
+// 			const [s,v] = part.split(/\s*[:=]\s*/)
+// 			if (!v && pos_map[s]) {
+// 				return pos_map[s]
+// 			}
+// 			return [s,parse_calc(v)]
+// 		})
+// 		.map(([s,v]) => `${s}:${v};`)
+// 	console.log(pos, parts, r)
+// 	return { style: r.join('') }
+// }
 
 const mergeOptions = (def, ovr) => {
 	const ret = {}
@@ -986,7 +627,893 @@ const mergeOptions = (def, ovr) => {
 
 
 
-const instance = (instanceOptions = {}) => {
+
+const parser = (conditions, writers, syntax, string_groups) => {
+
+	const all_strings = [].concat(...Object.values(string_groups))
+
+
+	const getConditionMatcher = scope =>
+		({ reading, string, condition }) => {
+			const thisCharacter = scope.currentCharacter
+			return (
+				(!reading || scope.is_reading(reading)) &&
+				(!string || string_is(thisCharacter, ...string)) &&
+				(!condition || condition(scope, thisCharacter))
+			)
+		}
+	const getConditionMatcherQuick = scope =>
+		({ reading, string, condition }) =>
+				(!condition || condition(scope, scope.currentCharacter))
+
+	const defaultAction = scope => ({ buffer: scope.currentCharacter })
+
+
+
+	const filter_conditions = syn =>
+		Object.fromEntries(
+			[[
+				'default',
+				array_sliceAfter(
+					conditions.filter(({ reading, string, condition }) =>
+						(!reading || reading === syn || (Array.isArray(reading) && reading.includes(syn))) &&
+						(!string || !all_strings.some(ch => string_is(ch, ...string)))
+					),
+					({ condition }) => !condition
+				)
+			]].concat(
+				all_strings
+				.map(thisCharacter => [
+					thisCharacter,
+					array_sliceAfter(
+						conditions.filter(({ reading, string, condition }) =>
+							(!reading || reading === syn || (Array.isArray(reading) && reading.includes(syn))) &&
+							(!string || string_is(thisCharacter, ...string))),
+						({ condition }) => !condition
+					)
+				])
+			)
+		)
+
+	const quick_conditions =
+		Object.fromEntries(
+			[[
+				'default',
+				filter_conditions(undefined)
+			]].concat(
+				Object.values(syntax).concat(['START','END'])
+					.map(syn => [
+						syn,
+						filter_conditions(syn)
+					])
+			)
+		)
+
+	const getParserStep = (scope, passthrough) => {
+		const matchingConditionQuick = getConditionMatcherQuick(scope)
+		const parserStepCall = () => {
+			const ct = scope.currentType || 'default'
+			const foundCondition = (
+					quick_conditions[ct][scope.currentCharacter] ||
+					quick_conditions[ct].default
+				).find(matchingConditionQuick)
+
+			const action = (foundCondition ? foundCondition.action : false) || defaultAction
+			const result = action(scope, passthrough)
+			scope.reserve += scope.currentCharacter
+			if (result) {
+				if (result.setBuffer !== undefined)
+					scope.buffer = result.setBuffer
+				if (result.buffer !== undefined)
+					scope.buffer += result.buffer
+			}
+			return foundCondition
+		}
+		return parserStepCall
+	}
+
+	const parse = (str = '', args = {}, options = {}) => {
+		const {
+			debug: debug_call = false,
+			writer = writers.default,
+			outputString = false
+		} = options
+
+		// Init scope
+		const scope = new Scope(str, args)
+		scope.writer = writer
+
+		// Set up debug stuff
+		const debug_stack = []
+		const debug = (index, chosenCondition) =>
+			debug_stack.push({ index, reading: JSON.parse(JSON.stringify({ ...scope.data, chosen: chosenCondition })) })
+		const subDebugCall = debug_call ? (index) => (inp, sub_debug_stack) => {
+			sub_debug_stack.forEach(db => {
+				debug_stack.push({ index: index+1+db.index, reading: db.reading })
+			})
+		} : () => false
+
+		const passthrough = { ...options, debug: subDebugCall }
+		// Get a parser instance for this scope
+		const parserStep = getParserStep(scope, passthrough)
+
+		if (quick_conditions.START)
+			quick_conditions.START.default
+				.forEach(condition => condition.action(scope, passthrough))
+
+		// Zero-th debug step, before any action
+		if (debug_call)
+			debug(0, -2)
+
+		// Parse every character of the string one by one
+		while (scope.next) {
+			const foundCondition = parserStep()
+
+			// Record each step of the parsing
+			if (debug_call)
+				debug(scope.index+1, conditions.indexOf(foundCondition))
+		}
+
+		if (quick_conditions.END)
+			quick_conditions.END.default
+				.forEach(condition => condition.action(scope, passthrough))
+
+		if (debug_call) {
+			// Final debug step, after all actions
+			debug(str.length+1, -3)
+			// Output the debug data
+			debug_call(str, debug_stack)
+		}
+
+		// Output final result
+		if (outputString && scope.writer.dumpString)
+			return scope.writer.dumpString()
+		return scope.writer.dump()
+	}
+
+	return parse
+}
+
+const default_attr = {
+	init: () => '',
+	write: str => str,
+	add: (curr, str) => str
+}
+const attr_trans = {
+	class: {
+		init: () => [],
+		write: classes => classes.join(' '),
+		add: (curr, str) => curr.concat(str.split(' '))
+	},
+	scroll: {
+		init: () => {},
+
+		trans: {
+			auto: {style:{overflow:'auto'}},
+			hidden: {style:{overflow:'hidden'}},
+			visible: {style:{overflow:'visible'}},
+			scroll: {style:{overflow:'scroll'}},
+			x: {style:{'overflow-x':'scroll'}},
+			y: {style:{'overflow-y':'scroll'}}
+		}
+	}
+}
+
+
+const pos_map = {
+	top: {top:'0'},
+	bottom: {bottom:'0'},
+	left: {left:'0'},
+	right: {right:'0'},
+	relative: {position:'relative'},
+	absolute: {position:'absolute'},
+	static: {position:'static'},
+	fixed: {position:'fixed'},
+	'border-box': {'box-sizing':'border-box'},
+	'content-box': {'box-sizing':'content-box'},
+	'padding-box': {'box-sizing':'padding-box'},
+	width: {width:'100%'},
+	height: {height:'100%'},
+	ellipsis: {
+		'text-overflow': 'ellipsis',
+		overflow: 'hidden',
+		'white-space': 'nowrap'
+	},
+	scroll: {overflow:'scroll'},
+	scrollx: {'overflow-x':'scroll'},
+	scrolly: {'overflow-y':'scroll'},
+	/*
+	"overflow":{
+		"auto":		"css",
+		"hidden":	"css",
+		"visible":	"css",
+	},
+	*/
+}
+const pos_tokens = {
+	assign: [':','='],
+	terminate: [';'],
+	whitespace: [' ','\t','\n'],
+	numeric: ['.','1','2','3','4','5','6','7','8','9','0'],
+	operators: ['-','+','/','*'],
+	openbrace: ['('],
+	closebrace: [')'],
+}
+const pos_syntax = {
+	PROP: 'property',
+	PROPNAME: 'propertyname',
+	PROPVAL: 'propertyvalue',
+	VALUE: 'value',
+	UNIT: 'unit',
+	BRACE: 'bracket'
+}
+// TODO: enforce no unit on b for a/b
+// TODO: enforce no unit on a or b for a*b
+const pos_actions = {
+	value(scope, value) {
+		return value
+			.map(p => {
+				if (typeof p === 'string')
+					return p
+				if (Array.isArray(p))
+					return `(${pos_actions.value(scope, p)})`
+				if (p.operator)
+					return p.operator
+				return `${p.value}${p.unit||'px'}`
+			}).join(' ')
+	},
+	done(scope, prop) {
+		if (prop.value) {
+			let out = `${prop.name}:`
+			const isCalc = prop.value.length > 1
+			if (isCalc)
+				out += 'calc('
+
+			out += pos_actions.value(scope, prop.value)
+
+			if (isCalc)
+				out += ')'
+			out += ';'
+			scope.writer.write(out)
+		} else
+		if (pos_map[prop.name]) {
+			scope.writer.write(
+				Object.entries(pos_map[prop.name])
+					.map(([p,v]) => `${p}:${v};`)
+			)
+		}
+	}
+}
+
+const pos_parser = parser([
+	{
+		reading: 'END',
+		action(scope) {
+			if (scope.is_reading(pos_syntax.PROPNAME)) {
+				const prop = scope.get_reading_data(pos_syntax.PROP)
+				scope.stop_reading(pos_syntax.PROP, true)
+				prop.name = scope.buffer
+				pos_actions.done(scope, prop)
+			} else
+			if (scope.is_reading(pos_syntax.PROPVAL)) {
+				const prop = scope.get_reading_data(pos_syntax.PROP)
+				scope.stop_reading(pos_syntax.PROP, true)
+				const read = scope.buffer
+				if (read)
+					prop.value.push(read)
+				pos_actions.done(scope, prop)
+			} else
+			if (scope.is_reading(pos_syntax.VALUE)) {
+				const val = scope.get_reading_data(pos_syntax.VALUE)
+				const prop = scope.get_reading_data(pos_syntax.PROP)
+				val.value = scope.buffer
+				scope.stop_reading(pos_syntax.PROP, true)
+				prop.value.push(val)
+				pos_actions.done(scope, prop)
+			} else
+			if (scope.is_reading(pos_syntax.UNIT)) {
+				const val = scope.get_reading_data(pos_syntax.VALUE)
+				const prop = scope.get_reading_data(pos_syntax.PROP)
+				val.unit = scope.buffer
+				scope.stop_reading(pos_syntax.PROP, true)
+				prop.value.push(val)
+				pos_actions.done(scope, prop)
+			}
+		}
+	},
+	{
+		reading: pos_syntax.PROPNAME,
+		string: [pos_tokens.assign],
+		action(scope) {
+			const prop = scope.get_reading_data(pos_syntax.PROP)
+			prop.name = scope.buffer
+			prop.value = []
+			scope.stop_reading(pos_syntax.PROPNAME)
+			scope.start_reading(pos_syntax.PROPVAL)
+		}
+	},
+	{
+		reading: pos_syntax.PROPNAME,
+		string: [pos_tokens.terminate],
+		action(scope) {
+			const prop = scope.get_reading_data(pos_syntax.PROP)
+			scope.stop_reading(pos_syntax.PROP, true)
+			prop.name = scope.buffer
+			pos_actions.done(scope, prop)
+		}
+	},
+	{
+		reading: pos_syntax.PROPVAL,
+		string: [pos_tokens.terminate],
+		action(scope) {
+			const prop = scope.get_reading_data(pos_syntax.PROP)
+			scope.stop_reading(pos_syntax.PROP, true)
+			prop.value.push(scope.buffer)
+			pos_actions.done(scope, prop)
+		}
+	},
+	{
+		reading: pos_syntax.BRACE,
+		string: [pos_tokens.terminate],
+		action(scope) {
+			throw new Error('Unclosed bracket')
+		}
+	},
+	{
+		reading: pos_syntax.PROPVAL,
+		string: [pos_tokens.openbrace],
+		action(scope) {
+			scope.start_reading(pos_syntax.BRACE, {value:[]})
+		}
+	},
+	{
+		reading: pos_syntax.VALUE,
+		string: [pos_tokens.closebrace],
+		condition(scope) {
+			return scope.is_reading(pos_syntax.BRACE, true)
+		},
+		action(scope) {
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			const prop = scope.get_reading_data(pos_syntax.BRACE)
+			val.value = scope.buffer
+			prop.value.push(val)
+			scope.stop_reading(pos_syntax.BRACE, true)
+			const par_prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
+
+			par_prop.value.push(prop.value)
+		}
+	},
+	{
+		reading: pos_syntax.UNIT,
+		string: [pos_tokens.closebrace],
+		action(scope) {
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			const prop = scope.get_reading_data(pos_syntax.BRACE)
+			val.unit = scope.buffer
+			prop.value.push(val)
+			scope.stop_reading(pos_syntax.BRACE, true)
+			const par_prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
+
+			par_prop.value.push(prop.value)
+		}
+	},
+	{
+		reading: pos_syntax.BRACE,
+		string: [pos_tokens.closebrace],
+		action(scope) {
+			scope.stop_reading(pos_syntax.BRACE, true)
+		}
+	},
+	{
+		reading: pos_syntax.VALUE,
+		string: [pos_tokens.terminate],
+		action(scope) {
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			const prop = scope.get_reading_data(pos_syntax.PROP)
+			val.value = scope.buffer
+			scope.stop_reading(pos_syntax.PROP, true)
+			prop.value.push(val)
+			pos_actions.done(scope, prop)
+		}
+	},
+	{
+		reading: pos_syntax.UNIT,
+		string: [pos_tokens.terminate],
+		action(scope) {
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			const prop = scope.get_reading_data(pos_syntax.PROP)
+			val.unit = scope.buffer
+			scope.stop_reading(pos_syntax.PROP, true)
+			prop.value.push(val)
+			pos_actions.done(scope, prop)
+		}
+	},
+	{
+		reading: pos_syntax.VALUE,
+		string: [pos_tokens.numeric],
+		action(scope) {
+			return {buffer:scope.currentCharacter}
+		}
+	},
+	{
+		reading: pos_syntax.VALUE,
+		string: [pos_tokens.operators],
+		action(scope) {
+			const prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			val.value = scope.buffer
+			prop.value.push(val)
+			prop.value.push({operator:scope.currentCharacter})
+			scope.stop_reading(pos_syntax.VALUE)
+		}
+	},
+	{
+		reading: pos_syntax.PROPVAL,
+		string: [pos_tokens.operators],
+		action(scope) {
+			const prop = scope.get_reading_data(pos_syntax.PROP)
+			prop.value.push({operator:scope.currentCharacter})
+		}
+	},
+	{
+		reading: pos_syntax.UNIT,
+		string: [pos_tokens.operators],
+		action(scope) {
+			const prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			val.unit = scope.buffer
+			prop.value.push(val)
+			prop.value.push({operator:scope.currentCharacter})
+			scope.stop_reading(pos_syntax.UNIT)
+			scope.stop_reading(pos_syntax.VALUE)
+			// scope.start_reading(pos_syntax.VALUE, {value:'',unit:false})
+		}
+	},
+	{
+		reading: pos_syntax.UNIT,
+		string: [pos_tokens.whitespace],
+		action(scope) {}
+	},
+	{
+		reading: pos_syntax.UNIT,
+		action(scope) {
+			return {buffer:scope.currentCharacter}
+		}
+	},
+	{
+		reading: pos_syntax.VALUE,
+		string: [pos_tokens.whitespace],
+		action(scope) {
+			const prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			val.value = scope.buffer
+			prop.value.push(val)
+			scope.stop_reading(pos_syntax.VALUE)
+		}
+	},
+	{
+		reading: pos_syntax.VALUE,
+		action(scope) {
+			const val = scope.get_reading_data(pos_syntax.VALUE)
+			val.value = scope.buffer
+			scope.start_reading(pos_syntax.UNIT)
+			return {buffer:scope.currentCharacter}
+		}
+	},
+	{
+		reading: [pos_syntax.PROPVAL, pos_syntax.BRACE],
+		string: [pos_tokens.numeric],
+		action(scope) {
+			scope.start_reading(pos_syntax.VALUE, {value:'',unit:false})
+			return {buffer:scope.currentCharacter}
+		}
+	},
+	{
+		string: [pos_tokens.whitespace],
+		action(scope) {}
+	},
+	{
+		reading: pos_syntax.PROPNAME,
+		action(scope) {
+			return {buffer:scope.currentCharacter}
+		}
+	},
+	{
+		reading: [pos_syntax.PROPVAL, pos_syntax.BRACE],
+		action(scope) {
+			return {buffer:scope.currentCharacter}
+		}
+	},
+	{
+		action(scope) {
+			scope.start_reading(pos_syntax.PROP, {})
+			scope.start_reading(pos_syntax.PROPNAME)
+			return {buffer:scope.currentCharacter}
+		}
+	}
+], {
+	default: {
+		inst: () => '',
+		dump: inst => inst,
+		write: (inst, dat) => inst+dat
+	}
+},
+pos_syntax,
+pos_tokens,
+)
+
+
+const instance = (instanceOptions) => {
+	// TODO: Extract that which is not configurable to make a generic "htma_parser"
+
+	const actions = {
+		open_tag(scope, tag, passthrough) {
+			const conditional = scope.currentCondition
+			if (conditional === false) {
+				if (string_is(tag.name, tag_groups.var)) {
+					scope.stop_reading(syntax.TAG)
+					if (tag.indent !== undefined) {
+						scope.start_reading(syntax.INDENT)
+						return { setBuffer: string_repeat(' ', tag.indent) }
+					}
+				}
+				return { setBuffer: '' }
+			}
+			let buff = false
+
+			const custom = custom_components[tag.name]
+			if (custom) {
+				const contents = custom.template
+				const defs = new custom.defaults()
+				Object.assign(defs, tag.attrs)
+
+				scope.writer.nest(
+					contents,
+					defs,
+					{ ...passthrough, debug: passthrough.debug(0) })
+
+				scope.stop_reading(syntax.TAG)
+				scope.setCondition(tag.indent, tag.eval)
+				return { setBuffer: '' }
+			} else
+			{
+
+			if (string_is(tag.name, tag_groups.system)) {
+				if (string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true)) {
+					tag.eval = false
+				} else
+				if (tag.name === tags.ELSE) {
+					tag.eval = true
+				} else
+				if (tag.name === tags.FOR) {
+					let result = []
+					if (tag.attrs.in) {
+						result = scope.exec(tag.attrs.in)
+					} else
+					if (tag.attrs.to) {
+						const start = tag.attrs.from ? scope.exec(tag.attrs.from) : 0
+						const range = scope.exec(tag.attrs.to) - start
+						const inc = tag.attrs.inc ? scope.exec(tag.attrs.inc) : Math.sign(range)
+						if (Math.sign(range) !== Math.sign(inc)) {
+							throw new Error('Infinite loop detected')
+						}
+						result = Array(Math.ceil(range/inc)).fill(0).map((v,k) => start+(k*inc))
+					}
+
+					if (typeof result === 'string') {
+						result = [...result]
+					}
+					if (Array.isArray(result)) {
+						result = result.map((val, index) => [ index, val ])
+					} else
+					if (typeof result === 'object') {
+						result = Object.entries(result)
+					} else
+					{
+						throw new Error(`This structure is not iterable`)
+					}
+
+
+					scope.start_reading(syntax.LOOP, {
+						varname:tag.attrs.id,
+						keyname:tag.attrs.key,
+						items:result,
+						indent: 0,
+						index: scope.index
+					})
+				} else
+				// {
+				if (tag.name === tags.VAR) {
+					let result
+					if (tag.attrs.fun) {
+						const prepared_func = scope.prep(tag.attrs.fun)
+						result = function (...args) {
+							let namedArgs = {}
+							if (tag.attrs.args) {
+								namedArgs = Object.fromEntries(
+									tag.attrs.args.split(' ')
+									.map((name, i) => [name,args[i]])
+								)
+							}
+							return prepared_func({ this: this, event, arguments, ...namedArgs })
+						}
+					} else {
+						let exp = false
+						if (tag.attrs.exp)
+							exp = tag.attrs.exp
+						else
+						if (tag.attrs.id)
+							exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+						result = exp ? scope.exec(exp) : scope.props
+					}
+
+
+					scope.stop_reading(syntax.TAG)
+					// reading attr value? send to buffer
+					scope.buffer = result//.toString()
+					buff = true
+					if (scope.is_reading(syntax.ATTRVAL, true)) {
+					} else
+					// reading tag content? assume attrname
+					if (scope.is_reading(syntax.TAGCONTENT)) {
+						scope.start_reading(syntax.ATTR)
+						scope.start_reading(syntax.ATTRNAME)
+					} else
+					// Reading nothing? start reading content
+					{
+						if (!scope.is_reading(syntax.CONTENT))
+							scope.start_reading(syntax.CONTENT)
+					}
+				} else
+				if (tag.name === tags.FUNC) {
+					let exp = false
+					if (tag.attrs.fun)
+						exp = tag.attrs.fun
+					else
+					if (tag.attrs.exp)
+						exp = tag.attrs.exp
+					else
+					if (tag.attrs.id)
+						exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+
+					const prepared_func = scope.prep(exp)
+					const result = function (...arguments) {
+						let namedArgs = {}
+						if (tag.attrs.args) {
+							namedArgs = Object.fromEntries(
+								tag.attrs.args.split(' ')
+								.map((name, i) => [name,arguments[i]])
+							)
+						}
+						return prepared_func({ this: this, event, arguments, ...namedArgs })
+					}
+
+					scope.stop_reading(syntax.TAG)
+					// reading attr value? send to buffer
+					scope.buffer = result//.toString()
+					buff = true
+					if (scope.is_reading(syntax.ATTRVAL, true)) {
+					} else
+					// reading tag content? assume attrname
+					if (scope.is_reading(syntax.TAGCONTENT)) {
+						scope.start_reading(syntax.ATTR)
+						scope.start_reading(syntax.ATTRNAME)
+					} else
+					// Reading nothing? start reading content
+					{
+						if (!scope.is_reading(syntax.CONTENT))
+							scope.start_reading(syntax.CONTENT)
+					}
+				} else
+				if (tag.name === tags.ARGS) {
+					if (scope.is_reading(syntax.TAGCONTENT, true)) {
+						const exp = tag.attrs.exp
+							? tag.attrs.exp
+							: (tag.attrs.id
+									? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+									: false)
+						const result = exp ? scope.exec(exp) : scope.props
+						if (typeof result === 'object') {
+							const par_tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+							par_tag.attrs = {
+								...par_tag.attrs,
+								...result
+							}
+						}
+					}
+				} else // condition
+				{
+					const exp = tag.attrs.exp
+						? tag.attrs.exp
+						: (tag.attrs.id
+								? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+								: 'undefined')
+					const result = scope.exec(exp)
+					tag.eval = Boolean(result)
+				}
+			}
+			if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
+				const selfClosing = tag.selfClosing || self_closing_tags[tag.name] || false
+				const attrs = tag.attrs.pos
+					? {...tag.attrs, pos:undefined, ...pos_parser(tag.attrs.pos)}
+					: tag.attrs
+				scope.writer.open({
+					name: tag.name,
+					indent: tag.indent,
+					selfClosing,
+					attrs: Object
+						.entries(attrs)
+						.filter(validAttributes)
+				})
+				if (selfClosing)
+					scope.stop_reading(syntax.TAG, true)
+			}
+			if (string_is(tag.name, tag_groups.condition) || scope.condition(tag.indent, true) !== undefined) {
+				scope.setCondition(tag.indent, tag.eval)
+			}
+
+			}
+			if (!buff)
+				return { setBuffer: '' }
+		},
+		close_tags(scope, min_indent) {
+			const siblings_and_nephews = scope.get_all_reading_data(syntax.TAG, ({ indent }) => indent < min_indent)
+			siblings_and_nephews
+				.forEach(tag => {
+					const { indent, name } = tag
+					const print_close = name &&
+						scope.condition(indent) !== false &&
+						!string_is(name, tag_groups.system)
+
+					scope.stop_reading(syntax.TAG, true)
+					if (print_close && scope.currentCondition !== false)
+						scope.writer.close({
+							name: tag.name,
+							indent: tag.indent,
+						})
+				})
+		},
+		render_loop(scope, loop, passthrough) {
+			const contents = scope.buffer+scope.currentCharacter
+			if (scope.currentCondition !== false)
+				loop.items.map(([ key, val ]) =>
+					scope.writer.nest(
+						contents,
+						nest_props(scope.props, {
+							[loop.varname]: val,
+							...(loop.keyname ? {[loop.keyname]: key } : {})
+						}),
+						{ ...passthrough }))
+			scope.buffer = string_repeat(' ', loop.indent)
+			scope.stop_reading(syntax.LOOP)
+			scope.start_reading(syntax.INDENT)
+		}
+	}
+
+	const eventAttrs = [
+		'onabort',
+		'onafterprint',
+		'onbeforeprint',
+		'onbeforeunload',
+		'onblur',
+		'oncanplay',
+		'oncanplaythrough',
+		'onchange',
+		'onclick',
+		'oncopy',
+		'oncuechange',
+		'oncut',
+		'ondblclick',
+		'ondurationchange',
+		'onemptied',
+		'onended',
+		'onerror',
+		'onerror',
+		'onfocus',
+		'onhashchange',
+		'oninput',
+		'oninvalid',
+		'onkeydown',
+		'onkeypress',
+		'onkeyup',
+		'onload',
+		'onloadeddata',
+		'onloadedmetadata',
+		'onloadstart',
+		'onmessage',
+		'onmousedown',
+		'onmousemove',
+		'onmouseout',
+		'onmouseover',
+		'onmouseup',
+		'onmousewheel',
+		'onoffline',
+		'ononline',
+		'onpagehide',
+		'onpageshow',
+		'onpaste',
+		'onpause',
+		'onplay',
+		'onplaying',
+		'onpopstate',
+		'onprogress',
+		'onratechange',
+		'onreset',
+		'onresize',
+		'onsearch',
+		'onseeked',
+		'onseeking',
+		'onselect',
+		'onstalled',
+		'onstorage',
+		'onsubmit',
+		'onsuspend',
+		'ontimeupdate',
+		'onunload',
+		'onvolumechange',
+		'onwaiting',
+		'onwheel',
+	]
+
+	const syntax = {
+		CONTENT: 'content',
+		INDENT: 'indent',
+		TAG: 'tag',
+		TAGNAME: 'tagname',
+		CLASS: 'class',
+		ID: 'id',
+		TAGCONTENT: 'tagcontent',
+		ATTR: 'attribute',
+		ATTRNAME: 'attributename',
+		ATTRVAL: 'attributevalue',
+		STRING: 'string',
+		ESCAPE: 'escape',
+		LOOP: 'loop'
+	}
+
+	const tags = {
+		IF: 'if',
+		VAR: 'var',
+		FUNC: 'func',
+		ARGS: 'args',
+		ELSE: 'else',
+		ELSEIF: 'elseif',
+		FOR: 'for'
+	}
+
+	const tag_groups = {
+		system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS,tags.FUNC],
+		condition: [tags.IF,tags.ELSE,tags.ELSEIF],
+		else: [tags.ELSE,tags.ELSEIF],
+		if: [tags.IF,tags.ELSEIF],
+		var: [tags.VAR,tags.FUNC],
+	}
+
+	const self_closing_tags = {
+		area: true,
+		base: true,
+		br: true,
+		col: true,
+		command: true,
+		embed: true,
+		hr: true,
+		img: true,
+		input: true,
+		keygen: true,
+		link: true,
+		menuitem: true,
+		meta: true,
+		param: true,
+		source: true,
+		track: true,
+		wbr: true
+	}
+
+
+
+	const validAttributes = ([ prop, val ]) =>
+		val && !(Array.isArray(val) && val.length === 0)
+
 
 	const writers = (() => {
 		const string_writer = {
@@ -1114,6 +1641,25 @@ const instance = (instanceOptions = {}) => {
 
 
 	const conditions = [
+		{
+			reading: "START",
+			action(scope) {
+				scope.start_reading(syntax.INDENT)
+			}
+		},
+		{
+			reading: "END",
+			action(scope) {
+				// Write any remaining content
+				if (scope.is_reading(syntax.CONTENT)) {
+					if (scope.currentCondition !== false)
+						scope.writer.content(scope.buffer)
+					scope.stop_reading(syntax.CONTENT)
+				}
+				// Close all remaining tags
+				actions.close_tags(scope, 0)
+			}
+		},
 		{
 			reading: syntax.LOOP,
 			action(scope, { debug, ...passthrough }) {
@@ -1404,138 +1950,17 @@ const instance = (instanceOptions = {}) => {
 			}
 		}
 	]
-	const all_strings = [].concat(...Object.values(string_groups))
 
+	const parse = parser(conditions, writers, syntax, string_groups)
 
-
-	const filter_conditions = syn =>
-		Object.fromEntries(
-			[[
-				'default',
-				array_sliceAfter(
-					conditions.filter(({ reading, string, condition }) =>
-						(!reading || reading === syn) &&
-						(!string || !all_strings.some(ch => string_is(ch, ...string)))
-					),
-					({ condition }) => !condition
-				)
-			]].concat(
-				all_strings
-				.map(thisCharacter => [
-					thisCharacter,
-					array_sliceAfter(
-						conditions.filter(({ reading, string, condition }) =>
-							(!reading || reading === syn) &&
-							(!string || string_is(thisCharacter, ...string))),
-						({ condition }) => !condition
-					)
-				])
-			)
-		)
-
-	const quick_conditions =
-		Object.fromEntries(
-			[[
-				'default',
-				filter_conditions(undefined)
-			]].concat(
-				Object.values(syntax)
-					.map(syn => [
-						syn,
-						filter_conditions(syn)
-					])
-			)
-		)
-
-	const getParserStep = (scope, passthrough) => {
-		const matchingConditionQuick = getConditionMatcherQuick(scope)
-		const parserStepCall = () => {
-			const ct = scope.currentType || 'default'
-			const foundCondition = (
-					quick_conditions[ct][scope.currentCharacter] ||
-					quick_conditions[ct].default
-				).find(matchingConditionQuick)
-
-			const action = (foundCondition ? foundCondition.action : false) || defaultAction
-			const result = action(scope, passthrough)
-			scope.reserve += scope.currentCharacter
-			if (result) {
-				if (result.setBuffer !== undefined)
-					scope.buffer = result.setBuffer
-				if (result.buffer !== undefined)
-					scope.buffer += result.buffer
-			}
-			return foundCondition
-		}
-		return parserStepCall
-	}
-
-	const parse = (str = '', args = {}, options = {}) => {
-		const {
-			debug: debug_call = false,
-			writer = writers.default,
-			outputString = false
-		} = options
-
-		// Init scope
-		const scope = new Scope(str, args)
-		scope.writer = writer
-
-		// Set up debug stuff
-		const debug_stack = []
-		const debug = (index, chosenCondition) =>
-			debug_stack.push({ index, reading: JSON.parse(JSON.stringify({ ...scope.data, chosen: chosenCondition })) })
-		const subDebugCall = debug_call ? (index) => (inp, sub_debug_stack) => {
-			sub_debug_stack.forEach(db => {
-				debug_stack.push({ index: index+1+db.index, reading: db.reading })
-			})
-		} : () => false
-
-		// Get a parser instance for this scope
-		const parserStep = getParserStep(scope, { ...options, debug: subDebugCall })
-
-		// Zero-th debug step, before any action
-		if (debug_call)
-			debug(0, -2)
-
-		// Parse every character of the string one by one
-		while (scope.next) {
-			const foundCondition = parserStep()
-
-			// Record each step of the parsing
-			if (debug_call)
-				debug(scope.index+1, conditions.indexOf(foundCondition))
-		}
-
-		// Write any remaining content
-		if (scope.is_reading(syntax.CONTENT)) {
-			if (scope.currentCondition !== false)
-				scope.writer.content(scope.buffer)
-			scope.stop_reading(syntax.CONTENT)
-		}
-		// Close all remaining tags
-		actions.close_tags(scope, 0)
-
-		if (debug_call) {
-			// Final debug step, after all actions
-			debug(str.length+1, -3)
-			// Output the debug data
-			debug_call(str, debug_stack)
-		}
-
-		// Output final result
-		if (outputString && scope.writer.dumpString)
-			return scope.writer.dumpString()
-		return scope.writer.dump()
-	}
-
-	return {
+	return ({
 		parse,
+		parse_css: pos_parser,
 		writers,
 		custom: (opts = {}) =>
 			instance(mergeOptions(instanceOptions, opts)),
 		add: add_component
-	}
+	})
 
 }
 
@@ -1572,6 +1997,29 @@ return instance({
 			translate: [],
 		},
 		tagAttributes: {
+			if: {
+				exp: ['expression','eval']
+			},
+			var: {
+				exp: ['expression','eval'],
+				fun: ['funct','function','bind']
+			},
+			func: {
+				exp: ['expression','eval'],
+				fun: ['funct','function','bind']
+			},
+			args: {
+				exp: ['expression','eval']
+			},
+			else: {
+				exp: ['expression','eval']
+			},
+			elseif: {
+				exp: ['expression','eval']
+			},
+			for: {
+				exp: ['expression','eval']
+			},
 			a: {
 				download: [],
 				href: ['h','src','url'],

@@ -325,6 +325,13 @@ class HTMA_Tester {
           }
         })
       } else
+      if (writeMode === 'css') {
+        actual = htma.parse_css(input, args, {
+          debug: (inp, deb) => {
+            debug = deb
+          }
+        })
+			} else
       {
         actual = htma.parse(input, args, {
           debug: (inp, deb) => {
@@ -475,13 +482,13 @@ new HTMA_Tester()
     expected: `<div id="different-id"></div>`
   },
   {
-    desc: "render arbitraty attribute values surrounded by quotes",
+    desc: "render arbitrary attribute values surrounded by quotes",
     input: `<div some-attr="some complex value" anotherAttr='different quotes' >`,
     args: {},
     expected: `<div some-attr="some complex value" anotherattr="different quotes"></div>`
   },
   {
-    desc: "render arbitraty attribute values without quotes",
+    desc: "render arbitrary attribute values without quotes",
     input: `<div some-attr=some-complex_value anotherAttr=different-quotes >`,
     args: {},
     expected: `<div some-attr="some-complex_value" anotherattr="different-quotes"></div>`
@@ -505,7 +512,7 @@ new HTMA_Tester()
     expected: `<div some-attr="some complex\\h value"></div>`
   },
   {
-    desc: "render arbitraty attribute values when they are indented",
+    desc: "render arbitrary attribute values when they are indented",
     input: `
     <div
       atr1="attr valu"
@@ -1059,6 +1066,12 @@ new HTMA_Tester()
     expected: `a1a2a3`
   },
 )
+// .add(
+// 	{
+// 		input: `<div pos="top; left; right:5%+10;" >`,
+// 		expected: `<div style="top:0;left:0;right:calc(5%+10px)"></div>`
+// 	}
+// )
 .add(
   {
     desc: `render a component`,
@@ -1294,4 +1307,78 @@ new HTMA_Tester()
   ]
 })
 //*/
+.add(
+	{
+		desc: "convert mathematical expressions to calc functions",
+		writeMode: 'css',
+		input: `right:5%+10;`,
+		expected: `right:calc(5% + 10px);`
+	},
+	{
+		desc: "convert mathematical expressions to calc functions if they are the last thing in the string",
+		writeMode: 'css',
+		input: `right:5%+10`,
+		expected: `right:calc(5% + 10px);`
+	},
+	{
+		desc: "convert mathematical expressions with arbitrary whitespace to calc functions",
+		writeMode: 'css',
+		input: ` right : 5% + 10 `,
+		expected: `right:calc(5% + 10px);`
+	},
+	{
+		desc: "not convert single values to calc functions",
+		writeMode: 'css',
+		input: `right:5%`,
+		expected: `right:5%;`
+	},
+	{
+		desc: "fill in units for standalone values",
+		writeMode: 'css',
+		input: `right:5`,
+		expected: `right:5px;`
+	},
+	{
+		desc: "convert mathematical expressions with brackets to calc functions",
+		writeMode: 'css',
+		input: `right:(5%+10)-(8em+4)`,
+		expected: `right:calc((5% + 10px) - (8em + 4px));`
+	},
+	{
+		desc: "convert mathematical expressions with brackets ending with no units to calc functions",
+		writeMode: 'css',
+		input: `right:(5+10)-(8+4)`,
+		expected: `right:calc((5px + 10px) - (8px + 4px));`
+	},
+	{
+		desc: "convert mathematical expressions with brackets ending with units to calc functions",
+		writeMode: 'css',
+		input: `right:(5%+10px)-(8em+4px)`,
+		expected: `right:calc((5% + 10px) - (8em + 4px));`
+	},
+	{
+		desc: "avoid converting string values",
+		writeMode: 'css',
+		input: `top:auto;`,
+		expected: `top:auto;`
+	},
+	{
+		desc: "avoid converting string values with arbitrary whitespace",
+		writeMode: 'css',
+		input: ` top : auto ;`,
+		expected: `top:auto;`
+	},
+	{
+		desc: "fill in no-value properties with their defaults",
+		writeMode: 'css',
+		input: `top`,
+		expected: `top:0;`
+	},
+	{
+		desc: "ignore nonsensical properties",
+		writeMode: 'css',
+		input: `dthdhsd`,
+		expected: ``
+	}
+)
 .exec()
