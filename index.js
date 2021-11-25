@@ -776,14 +776,19 @@ const parser = (conditions, writers, syntax, string_groups) => {
 
 const default_attr = {
 	init: () => '',
-	write: str => str,
-	add: (curr, str) => str
+	write: str => Array.isArray(str) ? str.join(' ') : str.toString(),
+	add: (curr, str) => str,
+	parse: str => str
 }
 const attr_trans = {
 	class: {
 		init: () => [],
-		write: classes => classes.join(' '),
-		add: (curr, str) => curr.concat(str.split(' '))
+		write: classes => classes
+			.filter(filter_truthy)
+			.filter(filter_unique)
+			.join(' '),
+		add: (currVal, newVal) => currVal.concat(newVal),
+		parse: str => Array.isArray(str) ? str : str.toString().split(' ')
 	},
 	scroll: {
 		init: () => {},
@@ -1147,6 +1152,15 @@ const instance = (instanceOptions) => {
 	// TODO: Extract that which is not configurable to make a generic "htma_parser"
 
 	const actions = {
+		inline_expression(tag) {
+			return tag.attrs.id+((tag.attrs.class && tag.attrs.class.length) ? ('.'+tag.attrs.class.join('.')) : '')
+		},
+		attribute(tag, attr, attrVal) {
+			const attr_tr = attr_trans[attr] || default_attr
+			if (!(attr in tag.attrs))
+				tag.attrs[attr] = attr_tr.init()
+			tag.attrs[attr] = attr_tr.add(tag.attrs[attr], attr_tr.parse(attrVal))
+		},
 		open_tag(scope, tag, passthrough) {
 			const conditional = scope.currentCondition
 			if (conditional === false) {
@@ -1243,7 +1257,7 @@ const instance = (instanceOptions) => {
 							exp = tag.attrs.exp
 						else
 						if (tag.attrs.id)
-							exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+							exp = this.inline_expression(tag)
 						result = exp ? scope.exec(exp) : scope.props
 					}
 
@@ -1274,7 +1288,7 @@ const instance = (instanceOptions) => {
 						exp = tag.attrs.exp
 					else
 					if (tag.attrs.id)
-						exp = tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+						exp = this.inline_expression(tag)
 
 					const prepared_func = scope.prep(exp)
 					const result = function (...arguments) {
@@ -1310,7 +1324,7 @@ const instance = (instanceOptions) => {
 						const exp = tag.attrs.exp
 							? tag.attrs.exp
 							: (tag.attrs.id
-									? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+									? this.inline_expression(tag)
 									: false)
 						const result = exp ? scope.exec(exp) : scope.props
 						if (typeof result === 'object') {
@@ -1326,7 +1340,7 @@ const instance = (instanceOptions) => {
 					const exp = tag.attrs.exp
 						? tag.attrs.exp
 						: (tag.attrs.id
-								? tag.attrs.id+(tag.attrs.class.length ? ('.'+tag.attrs.class.join('.')) : '')
+								? this.inline_expression(tag)
 								: 'undefined')
 					const result = scope.exec(exp)
 					tag.eval = Boolean(result)
@@ -1532,12 +1546,7 @@ const instance = (instanceOptions) => {
 				const attrs = (others
 					.map(([prop, val]) =>
 						`${prop}${val === true ? '' : `="${encodeEntities(
-								Array.isArray(val)
-								? val
-									.filter(filter_truthy)
-									.filter(filter_unique)
-									.join(' ')
-								: val.toString()
+								(attr_trans[prop] || default_attr).write(val)
 							)}"`}`))
 					.concat(mappedEvents
 						.map(([prop, id]) =>
@@ -1575,20 +1584,14 @@ const instance = (instanceOptions) => {
 				const newEl = document.createElement(tag.name)
 				tag.attrs
 					.forEach(([ prop, val ]) => {
-						if (eventAttrs.includes(prop) && typeof val === 'function') {
+						if (eventAttrs.includes(prop) && typeof val === 'function')
 							newEl.addEventListener(prop.slice(2), val)
-						} else {
+						else
 							newEl.setAttribute(prop,
 								val === true
-								? ''
-								: (Array.isArray(val)
-									? val
-										.filter(filter_truthy)
-										.filter(filter_unique)
-										.join(' ')
-									: val)
-								)
-						}
+									? ''
+									: (attr_trans[prop] || default_attr).write(val)
+							)
 					})
 				if (!tag.selfClosing)
 					inst.tracker.unshift({ indent: tag.indent, element: newEl })
@@ -1757,14 +1760,8 @@ const instance = (instanceOptions) => {
 				scope.stop_reading(syntax.ATTR)
 				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
 
-				if (attributeCondition) {
-					if (tag.current_attr === 'class') {
-						tag.attrs.class = tag.attrs.class.concat((''+attrVal).split(' '))
-					} else
-					{
-						tag.attrs[tag.current_attr] = attrVal
-					}
-				}
+				if (attributeCondition)
+					actions.attribute(tag, tag.current_attr, attrVal)
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
 					scope.stop_reading(syntax.TAGCONTENT)
@@ -1788,7 +1785,7 @@ const instance = (instanceOptions) => {
 					scope.stop_reading(syntax.ID)
 				} else
 				if (scope.is_reading(syntax.CLASS)) {
-					tag.attrs.class.push(scope.buffer)
+					actions.attribute(tag, 'class', scope.buffer)
 					scope.stop_reading(syntax.CLASS)
 				}
 
@@ -1840,7 +1837,7 @@ const instance = (instanceOptions) => {
 		{
 			string: [string_groups.opentag],
 			action(scope) {
-				const child_tag = {attrs:{class:[]}}
+				const child_tag = {attrs:{}}
 				if (scope.is_reading(syntax.ATTRVAL, true)) {
 					scope.get_reading_data(syntax.ATTRVAL).value = scope.buffer
 				} else

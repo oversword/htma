@@ -461,13 +461,13 @@ new HTMA_Tester()
     desc: "render the inline class and inline ID when provided together",
     input: `<div#id-val.class-val.another-class>`,
     args: {},
-    expected: `<div class="class-val another-class" id="id-val"></div>`
+    expected: `<div id="id-val" class="class-val another-class"></div>`
   },
   {
     desc: "render the inline class as the class attribute",
     input: `<div#id-val.class-val.another-class>`,
     args: {},
-    expected: `<div class="class-val another-class" id="id-val"></div>`
+    expected: `<div id="id-val" class="class-val another-class"></div>`
   },
   {
     desc: "merge the inline class and attribute class together",
