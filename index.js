@@ -776,19 +776,30 @@ const parser = (conditions, writers, syntax, string_groups) => {
 
 const default_attr = {
 	init: () => '',
-	write: str => Array.isArray(str) ? str.join(' ') : str.toString(),
+	write: val => {
+		if (val === true)
+			return ''
+		if (Array.isArray(val))
+			return val.join(' ')
+		return val.toString()
+	},
 	add: (curr, str) => str,
-	parse: str => str
+	parse: str => str,
+	validate: val => val && !(Array.isArray(val) && val.length === 0)
 }
 const attr_trans = {
 	class: {
 		init: () => [],
-		write: classes => classes
+		write: classes => {
+			console.log(classes)
+			return classes
 			.filter(filter_truthy)
 			.filter(filter_unique)
-			.join(' '),
+			.join(' ')
+		},
 		add: (currVal, newVal) => currVal.concat(newVal),
-		parse: str => Array.isArray(str) ? str : str.toString().split(' ')
+		parse: str => Array.isArray(str) ? str : str.toString().split(' '),
+		validate: val => val.length
 	},
 	scroll: {
 		init: () => {},
@@ -802,6 +813,19 @@ const attr_trans = {
 			y: {style:{'overflow-y':'scroll'}}
 		}
 	}
+}
+
+const transform_attribute = (acc, [ prop, val ]) => {
+	const attr_tr = attr_trans[prop] || default_attr
+	if (attr_tr.validate && !attr_tr.validate(val))
+		return acc
+	if (attr_tr.trans) {
+		if (attr_tr.trans[val]) {
+			return { ...acc, ...attr_tr.trans[val] }
+		}
+		return acc
+	}
+	return {...acc, [prop]: attr_tr.write(val) }
 }
 
 
@@ -1348,16 +1372,21 @@ const instance = (instanceOptions) => {
 			}
 			if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
 				const selfClosing = tag.selfClosing || self_closing_tags[tag.name] || false
-				const attrs = tag.attrs.pos
-					? {...tag.attrs, pos:undefined, ...pos_parser(tag.attrs.pos)}
-					: tag.attrs
+				// const attrs = tag.attrs.pos
+				// 	? {...tag.attrs, pos:undefined, ...pos_parser(tag.attrs.pos)}
+				// 	: tag.attrs
+				const attrs = Object
+					.entries(tag.attrs)
+					.reduce(transform_attribute, {})
+				// tag.attrs.pos
+				// 	? {...tag.attrs, pos:undefined, ...pos_parser(tag.attrs.pos)}
+				// 	: tag.attrs
 				scope.writer.open({
 					name: tag.name,
 					indent: tag.indent,
 					selfClosing,
 					attrs: Object
 						.entries(attrs)
-						.filter(validAttributes)
 				})
 				if (selfClosing)
 					scope.stop_reading(syntax.TAG, true)
@@ -1524,11 +1553,6 @@ const instance = (instanceOptions) => {
 	}
 
 
-
-	const validAttributes = ([ prop, val ]) =>
-		val && !(Array.isArray(val) && val.length === 0)
-
-
 	const writers = (() => {
 		const string_writer = {
 			inst: () => '',
@@ -1545,9 +1569,7 @@ const instance = (instanceOptions) => {
 				})
 				const attrs = (others
 					.map(([prop, val]) =>
-						`${prop}${val === true ? '' : `="${encodeEntities(
-								(attr_trans[prop] || default_attr).write(val)
-							)}"`}`))
+						`${prop}="${encodeEntities(val)}"`))
 					.concat(mappedEvents
 						.map(([prop, id]) =>
 							`${prop}="window.__htma__string_writer__event_callbacks[${id}].call(this)"`))
@@ -1587,11 +1609,7 @@ const instance = (instanceOptions) => {
 						if (eventAttrs.includes(prop) && typeof val === 'function')
 							newEl.addEventListener(prop.slice(2), val)
 						else
-							newEl.setAttribute(prop,
-								val === true
-									? ''
-									: (attr_trans[prop] || default_attr).write(val)
-							)
+							newEl.setAttribute(prop, val)
 					})
 				if (!tag.selfClosing)
 					inst.tracker.unshift({ indent: tag.indent, element: newEl })

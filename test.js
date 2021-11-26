@@ -633,8 +633,7 @@ new HTMA_Tester()
         selected
     >`,
     args: {},
-    expected: `<div selected></div>`,
-    expectedDOM: `<div selected=""></div>`
+    expected: `<div selected=""></div>`
   },
   {
     desc: "not render a property in a false condition",
@@ -726,8 +725,7 @@ new HTMA_Tester()
       onclick="1234"
       title="5678"
     >`,
-    expected: `<div class="class-one" random-attrname onclick="1234" title="5678"></div>`,
-    expectedDOM: `<div class="class-one" random-attrname="" onclick="1234" title="5678"></div>`
+    expected: `<div class="class-one" random-attrname="" onclick="1234" title="5678"></div>`
   },
   {
     desc: "render attributes after a conditional attribute",
@@ -737,8 +735,7 @@ new HTMA_Tester()
         stand-alone
       data-attr=attr-val
     >`,
-    expected: `<div class="instruments-instrument" stand-alone data-attr="attr-val"></div>`,
-    expectedDOM: `<div class="instruments-instrument" stand-alone="" data-attr="attr-val"></div>`
+    expected: `<div class="instruments-instrument" stand-alone="" data-attr="attr-val"></div>`
   },
   {
     desc: "render attributes after a false conditional attribute",
