@@ -1,3 +1,7 @@
+const this_script = document.currentScript
+const this_script_dir = this_script.src.match(/^(.*?)[^\/]+$/)[1]
+const this_script_dir_replace_regex = new RegExp(this_script_dir.replace(/([^a-z0-9])/gi, "\\$1")+"([^:]+)", 'gm')
+
 
 const encodeEntities = (() => {
   const HTMLEntities = {
@@ -264,29 +268,49 @@ const debugStepper = (input, debug) => {
   const cont_text = document.createElement('pre')
   const cont_read = document.createElement('pre')
   const cont_out = document.createElement('pre')
+  const cont_log = document.createElement('pre')
   const btn_back = document.createElement('button')
   const btn_forth = document.createElement('button')
   const rend = () => {
     const d = debug[ind]
+    if (!d) {
+      cont_text.innerHTML = "% Error, no output - See Console %"
+      return;
+    }
     cont_text.innerHTML =
       encodeEntities(input.slice(0, Math.max(0,d.index-1))) +
         (d.index > 0
           ? ('<span style="color:#fff;background:#000;" >'+
-            (input[d.index-1]||'')+
-          '</span>')
+              (input[d.index-1]||'')+
+            '</span>')
           : '')+
       encodeEntities(input.slice(d.index))
-    cont_read.innerHTML = encodeEntities(JSON.stringify({...d.reading}, null, '  '))
+    cont_read.innerHTML = encodeEntities(JSON.stringify(d.data, null, '  '))
+    cont_log.innerHTML =
+        d.log
+          .map(({ type, args }) =>
+            `<span class="log log-${type}">`+
+              args.map(arg =>
+                encodeEntities(
+                  typeof arg === 'string'
+                    ? arg
+                    : JSON.stringify(arg, null, '  ')
+                ).replace(/%REL_LINK%(.*?)%\/REL_LINK%/gmi, `<a href="${this_script_dir}$1" >$1</a>`)
+              ).join(' ')+
+            `</span>`
+          ).join('\n')
   }
 
   btn_back.addEventListener('click', () => {
-    if (ind-1 in debug)
-      ind--
+    if (!(ind-1 in debug)) return;
+
+    ind--
     rend()
   })
   btn_forth.addEventListener('click', () => {
-    if (ind+1 in debug)
-      ind++
+    if (!(ind+1 in debug)) return;
+
+    ind++
     rend()
   })
 
@@ -298,6 +322,7 @@ const debugStepper = (input, debug) => {
   cont.appendChild(cont_text)
   cont.appendChild(cont_out)
   cont.appendChild(cont_read)
+  cont.appendChild(cont_log)
   document.addEventListener("DOMContentLoaded", () => {
     document.body.appendChild(cont)
   })
@@ -307,12 +332,19 @@ const debugStepper = (input, debug) => {
 class HTMA_Tester {
   #cases = []
   #execCase = ({ input, args, expected, desc = '', writeMode }) => {
-    const log = []
-    const orig_log = console.log
-    console.log = (...args) => {
-      log.push(args)
+    let debug_stack = []
+    let step_log = []
+    const debug_call = (index, data, chosen) => {
+      debug_stack.push({ index, data: { ...data, chosen }, log: step_log })
+      step_log = []
     }
-    let debug = false
+
+    const orig_log = console.log
+    const log = []
+    console.log = (...args) => {
+      step_log.push({ type: 'log', args })
+      log.push({ type: 'log', args })
+    }
     let actual = ''
     let failure = false
     try {
@@ -320,28 +352,40 @@ class HTMA_Tester {
         actual = htma.parse(input, args, {
           writer: htma.writers.dom,
           outputString: true,
-          debug: (inp, deb) => {
-            debug = deb
-          }
+          debug: debug_call
+        })
+      } else
+      if (writeMode === 'obj') {
+        actual = htma.parse(input, args, {
+          writer: htma.writers.object,
+          outputString: true,
+          debug: debug_call
         })
       } else
       if (writeMode === 'css') {
         actual = htma.parse_css(input, args, {
-          debug: (inp, deb) => {
-            debug = deb
-          }
+					outputString: true,
+          debug: debug_call
         })
-			} else
+      } else
       {
         actual = htma.parse(input, args, {
-          debug: (inp, deb) => {
-            debug = deb
-          }
+					outputString: true,
+          debug: debug_call
         })
       }
     } catch(e) {
       failure = e
-      console.error(e)
+			if (debug_stack.length) {
+	      debug_stack[debug_stack.length-1].log.push({
+	        type: 'error',
+	        args: [
+	          // e.name,
+	          // e.message,
+	          e.stack.replace(this_script_dir_replace_regex, '%REL_LINK%$1%/REL_LINK%')
+	        ]
+	      })
+			}
     }
     if (actual === expected && !failure) {
       orig_log('%cShould '+desc, 'color:#090')
@@ -349,9 +393,15 @@ class HTMA_Tester {
       console.error('Did not '+desc)
       console.error('EXPECT: ', expected)
       console.error('ACTUAL: ', actual)
-      console.error('LOGS: ')
-      log.forEach(args => orig_log(...args))
-      debugStepper(input, debug)
+      if (log.length) {
+        console.error('LOGS: ')
+        log.forEach(({ args }) => orig_log(...args))
+      } else {
+        console.error('NO LOGS')
+      }
+      if (failure)
+        console.error(failure)
+      debugStepper(input, debug_stack)
     }
     console.log = orig_log
   }
@@ -1063,12 +1113,12 @@ new HTMA_Tester()
     expected: `a1a2a3`
   },
 )
-// .add(
-// 	{
-// 		input: `<div pos="top; left; right:5%+10;" >`,
-// 		expected: `<div style="top:0;left:0;right:calc(5%+10px)"></div>`
-// 	}
-// )
+.add(
+  {
+    input: `<div style="top; left; right:5%+10;" >`,
+    expected: `<div style="top:0;left:0;right:calc(5% + 10px);"></div>`
+  }
+)
 .add(
   {
     desc: `render a component`,
@@ -1235,6 +1285,7 @@ new HTMA_Tester()
 .variate((testcase) => [
   {...testcase,writeMode:'string'},
   {...testcase,writeMode:'dom',desc:(testcase.desc||'')+' DOM',...(testcase.expectedDOM ? {expected:testcase.expectedDOM} : {})},
+  {...testcase,writeMode:'obj',desc:(testcase.desc||'')+' Object',...(testcase.expectedObj ? {expected:testcase.expectedObj} : {})},
 ])
 //*/
 /*
@@ -1305,77 +1356,95 @@ new HTMA_Tester()
 })
 //*/
 .add(
+  {
+    desc: "convert mathematical expressions to calc functions",
+    writeMode: 'css',
+    input: `right:5%+10;`,
+    expected: `right:calc(5% + 10px);`
+  },
+  {
+    desc: "convert mathematical expressions to calc functions if they are the last thing in the string",
+    writeMode: 'css',
+    input: `right:5%+10`,
+    expected: `right:calc(5% + 10px);`
+  },
+  {
+    desc: "convert mathematical expressions with arbitrary whitespace to calc functions",
+    writeMode: 'css',
+    input: ` right : 5% + 10 `,
+    expected: `right:calc(5% + 10px);`
+  },
+  {
+    desc: "not convert single values to calc functions",
+    writeMode: 'css',
+    input: `right:5%`,
+    expected: `right:5%;`
+  },
+  {
+    desc: "fill in units for standalone values",
+    writeMode: 'css',
+    input: `right:5`,
+    expected: `right:5px;`
+  },
+  {
+    desc: "convert mathematical expressions with brackets to calc functions",
+    writeMode: 'css',
+    input: `right:(5%+10)-(8em+4)`,
+    expected: `right:calc((5% + 10px) - (8em + 4px));`
+  },
+  {
+    desc: "convert mathematical expressions with brackets ending with no units to calc functions",
+    writeMode: 'css',
+    input: `right:(5+10)-(8+4)`,
+    expected: `right:calc((5px + 10px) - (8px + 4px));`
+  },
+  {
+    desc: "convert mathematical expressions with brackets ending with units to calc functions",
+    writeMode: 'css',
+    input: `right:(5%+10px)-(8em+4px)`,
+    expected: `right:calc((5% + 10px) - (8em + 4px));`
+  },
+  {
+    desc: "avoid converting string values",
+    writeMode: 'css',
+    input: `top:auto;`,
+    expected: `top:auto;`
+  },
+  {
+    desc: "avoid converting string values with arbitrary whitespace",
+    writeMode: 'css',
+    input: ` top : auto ;`,
+    expected: `top:auto;`
+  },
+  {
+    desc: "fill in no-value properties with their defaults",
+    writeMode: 'css',
+    input: `top`,
+    expected: `top:0;`
+  },
+  {
+    desc: "ignore nonsensical properties",
+    writeMode: 'css',
+    input: `dthdhsd`,
+    expected: ``
+  },
 	{
-		desc: "convert mathematical expressions to calc functions",
+		desc: "write out non-mathematical values normally",
 		writeMode: 'css',
-		input: `right:5%+10;`,
-		expected: `right:calc(5% + 10px);`
+		input:`transform:rotate(4deg)`,
+		expected: `transform:rotate(4deg);`
 	},
 	{
-		desc: "convert mathematical expressions to calc functions if they are the last thing in the string",
+		desc: "write out calcs nested in brackets",
 		writeMode: 'css',
-		input: `right:5%+10`,
-		expected: `right:calc(5% + 10px);`
+		input:`transform:rotate(4deg+8deg)`,
+		expected: `transform:rotate(calc(4deg + 8deg));`
 	},
 	{
-		desc: "convert mathematical expressions with arbitrary whitespace to calc functions",
+		desc: "ignore any semi-colons outside of a property definition",
 		writeMode: 'css',
-		input: ` right : 5% + 10 `,
-		expected: `right:calc(5% + 10px);`
-	},
-	{
-		desc: "not convert single values to calc functions",
-		writeMode: 'css',
-		input: `right:5%`,
-		expected: `right:5%;`
-	},
-	{
-		desc: "fill in units for standalone values",
-		writeMode: 'css',
-		input: `right:5`,
-		expected: `right:5px;`
-	},
-	{
-		desc: "convert mathematical expressions with brackets to calc functions",
-		writeMode: 'css',
-		input: `right:(5%+10)-(8em+4)`,
-		expected: `right:calc((5% + 10px) - (8em + 4px));`
-	},
-	{
-		desc: "convert mathematical expressions with brackets ending with no units to calc functions",
-		writeMode: 'css',
-		input: `right:(5+10)-(8+4)`,
-		expected: `right:calc((5px + 10px) - (8px + 4px));`
-	},
-	{
-		desc: "convert mathematical expressions with brackets ending with units to calc functions",
-		writeMode: 'css',
-		input: `right:(5%+10px)-(8em+4px)`,
-		expected: `right:calc((5% + 10px) - (8em + 4px));`
-	},
-	{
-		desc: "avoid converting string values",
-		writeMode: 'css',
-		input: `top:auto;`,
-		expected: `top:auto;`
-	},
-	{
-		desc: "avoid converting string values with arbitrary whitespace",
-		writeMode: 'css',
-		input: ` top : auto ;`,
-		expected: `top:auto;`
-	},
-	{
-		desc: "fill in no-value properties with their defaults",
-		writeMode: 'css',
-		input: `top`,
-		expected: `top:0;`
-	},
-	{
-		desc: "ignore nonsensical properties",
-		writeMode: 'css',
-		input: `dthdhsd`,
-		expected: ``
+		input:`;;top:0;;;;left:0; ;; right:0 ; ;; ;;`,
+		expected: `top:0px;left:0px;right:0px;`
 	}
 )
 .exec()

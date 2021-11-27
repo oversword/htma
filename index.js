@@ -583,27 +583,6 @@ const add_component = (...args) => {
 }
 
 
-
-
-// const parse_calc = c => {
-// 	return c
-// }
-// const parse_pos = pos => {
-// 	const parts = pos.split(/\s*;\s*/)
-// 	const r = parts
-// 		.filter(filter_truthy)
-// 		.map(part => {
-// 			const [s,v] = part.split(/\s*[:=]\s*/)
-// 			if (!v && pos_map[s]) {
-// 				return pos_map[s]
-// 			}
-// 			return [s,parse_calc(v)]
-// 		})
-// 		.map(([s,v]) => `${s}:${v};`)
-// 	console.log(pos, parts, r)
-// 	return { style: r.join('') }
-// }
-
 const mergeOptions = (def, ovr) => {
 	const ret = {}
 	for (const k in def) {
@@ -630,6 +609,16 @@ const mergeOptions = (def, ovr) => {
 
 const parser = (conditions, writers, syntax, string_groups) => {
 
+	const system_syntax = ['START','END']
+
+	const instance = {syntax}
+
+	const getSyntax = val => system_syntax.includes(val) ? val : syntax[val]
+
+	const syntaxCondition = (syn, reading, not_reading) =>
+		(!reading || (typeof reading === 'string' && getSyntax(reading) === syn) || (Array.isArray(reading) && reading.some(read => getSyntax(read) === syn))) &&
+		(!not_reading || (typeof not_reading === 'string' && getSyntax(not_reading) !== syn) || (Array.isArray(not_reading) && !not_reading.some(read => getSyntax(read) === syn)))
+
 	const all_strings = [].concat(...Object.values(string_groups))
 
 
@@ -643,7 +632,7 @@ const parser = (conditions, writers, syntax, string_groups) => {
 			)
 		}
 	const getConditionMatcherQuick = scope =>
-		({ reading, string, condition }) =>
+		({ condition }) =>
 				(!condition || condition(scope, scope.currentCharacter))
 
 	const defaultAction = scope => ({ buffer: scope.currentCharacter })
@@ -655,22 +644,22 @@ const parser = (conditions, writers, syntax, string_groups) => {
 			[[
 				'default',
 				array_sliceAfter(
-					conditions.filter(({ reading, string, condition }) =>
-						(!reading || reading === syn || (Array.isArray(reading) && reading.includes(syn))) &&
+					conditions.filter(({ reading, string, not_reading }) =>
+						syntaxCondition(syn, reading, not_reading) &&
 						(!string || !all_strings.some(ch => string_is(ch, ...string)))
 					),
 					({ condition }) => !condition
-				)
+				).map(({ condition, action }) => ({ condition: condition && condition.bind(instance), action: action.bind(instance) }))
 			]].concat(
 				all_strings
 				.map(thisCharacter => [
 					thisCharacter,
 					array_sliceAfter(
-						conditions.filter(({ reading, string, condition }) =>
-							(!reading || reading === syn || (Array.isArray(reading) && reading.includes(syn))) &&
+						conditions.filter(({ reading, string, not_reading }) =>
+							syntaxCondition(syn, reading, not_reading) &&
 							(!string || string_is(thisCharacter, ...string))),
 						({ condition }) => !condition
-					)
+					).map(({ condition, action }) => ({ condition: condition && condition.bind(instance), action: action.bind(instance) }))
 				])
 			)
 		)
@@ -688,6 +677,8 @@ const parser = (conditions, writers, syntax, string_groups) => {
 					])
 			)
 		)
+
+	console.log(quick_conditions)
 
 	const getParserStep = (scope, passthrough) => {
 		const matchingConditionQuick = getConditionMatcherQuick(scope)
@@ -726,12 +717,10 @@ const parser = (conditions, writers, syntax, string_groups) => {
 		// Set up debug stuff
 		const debug_stack = []
 		const debug = (index, chosenCondition) =>
-			debug_stack.push({ index, reading: JSON.parse(JSON.stringify({ ...scope.data, chosen: chosenCondition })) })
-		const subDebugCall = debug_call ? (index) => (inp, sub_debug_stack) => {
-			sub_debug_stack.forEach(db => {
-				debug_stack.push({ index: index+1+db.index, reading: db.reading })
-			})
-		} : () => false
+			debug_call(index, JSON.parse(JSON.stringify(scope.data)), chosenCondition)
+		const subDebugCall = debug_call
+			? (index) => (ind, dat, ch) => debug_call(index+ind+1, dat, ch)
+			: () => false
 
 		const passthrough = { ...options, debug: subDebugCall }
 		// Get a parser instance for this scope
@@ -758,12 +747,9 @@ const parser = (conditions, writers, syntax, string_groups) => {
 			quick_conditions.END.default
 				.forEach(condition => condition.action(scope, passthrough))
 
-		if (debug_call) {
-			// Final debug step, after all actions
+		// Final debug step, after all actions
+		if (debug_call)
 			debug(str.length+1, -3)
-			// Output the debug data
-			debug_call(str, debug_stack)
-		}
 
 		// Output final result
 		if (outputString && scope.writer.dumpString)
@@ -774,416 +760,396 @@ const parser = (conditions, writers, syntax, string_groups) => {
 	return parse
 }
 
-const default_attr = {
-	init: () => '',
-	write: val => {
-		if (val === true)
-			return ''
-		if (Array.isArray(val))
-			return val.join(' ')
-		return val.toString()
-	},
-	add: (curr, str) => str,
-	parse: str => str,
-	validate: val => val && !(Array.isArray(val) && val.length === 0)
+
+const generic_parser = (conditions, syntax) => {
+
 }
-const attr_trans = {
-	class: {
-		init: () => [],
-		write: classes => {
-			console.log(classes)
-			return classes
-			.filter(filter_truthy)
-			.filter(filter_unique)
-			.join(' ')
-		},
-		add: (currVal, newVal) => currVal.concat(newVal),
-		parse: str => Array.isArray(str) ? str : str.toString().split(' '),
-		validate: val => val.length
-	},
-	scroll: {
-		init: () => {},
-
-		trans: {
-			auto: {style:{overflow:'auto'}},
-			hidden: {style:{overflow:'hidden'}},
-			visible: {style:{overflow:'visible'}},
-			scroll: {style:{overflow:'scroll'}},
-			x: {style:{'overflow-x':'scroll'}},
-			y: {style:{'overflow-y':'scroll'}}
-		}
-	}
-}
-
-const transform_attribute = (acc, [ prop, val ]) => {
-	const attr_tr = attr_trans[prop] || default_attr
-	if (attr_tr.validate && !attr_tr.validate(val))
-		return acc
-	if (attr_tr.trans) {
-		if (attr_tr.trans[val]) {
-			return { ...acc, ...attr_tr.trans[val] }
-		}
-		return acc
-	}
-	return {...acc, [prop]: attr_tr.write(val) }
-}
-
-
-const pos_map = {
-	top: {top:'0'},
-	bottom: {bottom:'0'},
-	left: {left:'0'},
-	right: {right:'0'},
-	relative: {position:'relative'},
-	absolute: {position:'absolute'},
-	static: {position:'static'},
-	fixed: {position:'fixed'},
-	'border-box': {'box-sizing':'border-box'},
-	'content-box': {'box-sizing':'content-box'},
-	'padding-box': {'box-sizing':'padding-box'},
-	width: {width:'100%'},
-	height: {height:'100%'},
-	ellipsis: {
-		'text-overflow': 'ellipsis',
-		overflow: 'hidden',
-		'white-space': 'nowrap'
-	},
-	scroll: {overflow:'scroll'},
-	scrollx: {'overflow-x':'scroll'},
-	scrolly: {'overflow-y':'scroll'},
-	/*
-	"overflow":{
-		"auto":		"css",
-		"hidden":	"css",
-		"visible":	"css",
-	},
-	*/
-}
-const pos_tokens = {
-	assign: [':','='],
-	terminate: [';'],
-	whitespace: [' ','\t','\n'],
-	numeric: ['.','1','2','3','4','5','6','7','8','9','0'],
-	operators: ['-','+','/','*'],
-	openbrace: ['('],
-	closebrace: [')'],
-}
-const pos_syntax = {
-	PROP: 'property',
-	PROPNAME: 'propertyname',
-	PROPVAL: 'propertyvalue',
-	VALUE: 'value',
-	UNIT: 'unit',
-	BRACE: 'bracket'
-}
-// TODO: enforce no unit on b for a/b
-// TODO: enforce no unit on a or b for a*b
-const pos_actions = {
-	value(scope, value) {
-		return value
-			.map(p => {
-				if (typeof p === 'string')
-					return p
-				if (Array.isArray(p))
-					return `(${pos_actions.value(scope, p)})`
-				if (p.operator)
-					return p.operator
-				return `${p.value}${p.unit||'px'}`
-			}).join(' ')
-	},
-	done(scope, prop) {
-		if (prop.value) {
-			let out = `${prop.name}:`
-			const isCalc = prop.value.length > 1
-			if (isCalc)
-				out += 'calc('
-
-			out += pos_actions.value(scope, prop.value)
-
-			if (isCalc)
-				out += ')'
-			out += ';'
-			scope.writer.write(out)
-		} else
-		if (pos_map[prop.name]) {
-			scope.writer.write(
-				Object.entries(pos_map[prop.name])
-					.map(([p,v]) => `${p}:${v};`)
-			)
-		}
-	}
-}
-
-const pos_parser = parser([
-	{
-		reading: 'END',
-		action(scope) {
-			if (scope.is_reading(pos_syntax.PROPNAME)) {
-				const prop = scope.get_reading_data(pos_syntax.PROP)
-				scope.stop_reading(pos_syntax.PROP, true)
-				prop.name = scope.buffer
-				pos_actions.done(scope, prop)
-			} else
-			if (scope.is_reading(pos_syntax.PROPVAL)) {
-				const prop = scope.get_reading_data(pos_syntax.PROP)
-				scope.stop_reading(pos_syntax.PROP, true)
-				const read = scope.buffer
-				if (read)
-					prop.value.push(read)
-				pos_actions.done(scope, prop)
-			} else
-			if (scope.is_reading(pos_syntax.VALUE)) {
-				const val = scope.get_reading_data(pos_syntax.VALUE)
-				const prop = scope.get_reading_data(pos_syntax.PROP)
-				val.value = scope.buffer
-				scope.stop_reading(pos_syntax.PROP, true)
-				prop.value.push(val)
-				pos_actions.done(scope, prop)
-			} else
-			if (scope.is_reading(pos_syntax.UNIT)) {
-				const val = scope.get_reading_data(pos_syntax.VALUE)
-				const prop = scope.get_reading_data(pos_syntax.PROP)
-				val.unit = scope.buffer
-				scope.stop_reading(pos_syntax.PROP, true)
-				prop.value.push(val)
-				pos_actions.done(scope, prop)
-			}
-		}
-	},
-	{
-		reading: pos_syntax.PROPNAME,
-		string: [pos_tokens.assign],
-		action(scope) {
-			const prop = scope.get_reading_data(pos_syntax.PROP)
-			prop.name = scope.buffer
-			prop.value = []
-			scope.stop_reading(pos_syntax.PROPNAME)
-			scope.start_reading(pos_syntax.PROPVAL)
-		}
-	},
-	{
-		reading: pos_syntax.PROPNAME,
-		string: [pos_tokens.terminate],
-		action(scope) {
-			const prop = scope.get_reading_data(pos_syntax.PROP)
-			scope.stop_reading(pos_syntax.PROP, true)
-			prop.name = scope.buffer
-			pos_actions.done(scope, prop)
-		}
-	},
-	{
-		reading: pos_syntax.PROPVAL,
-		string: [pos_tokens.terminate],
-		action(scope) {
-			const prop = scope.get_reading_data(pos_syntax.PROP)
-			scope.stop_reading(pos_syntax.PROP, true)
-			prop.value.push(scope.buffer)
-			pos_actions.done(scope, prop)
-		}
-	},
-	{
-		reading: pos_syntax.BRACE,
-		string: [pos_tokens.terminate],
-		action(scope) {
-			throw new Error('Unclosed bracket')
-		}
-	},
-	{
-		reading: pos_syntax.PROPVAL,
-		string: [pos_tokens.openbrace],
-		action(scope) {
-			scope.start_reading(pos_syntax.BRACE, {value:[]})
-		}
-	},
-	{
-		reading: pos_syntax.VALUE,
-		string: [pos_tokens.closebrace],
-		condition(scope) {
-			return scope.is_reading(pos_syntax.BRACE, true)
-		},
-		action(scope) {
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			const prop = scope.get_reading_data(pos_syntax.BRACE)
-			val.value = scope.buffer
-			prop.value.push(val)
-			scope.stop_reading(pos_syntax.BRACE, true)
-			const par_prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
-
-			par_prop.value.push(prop.value)
-		}
-	},
-	{
-		reading: pos_syntax.UNIT,
-		string: [pos_tokens.closebrace],
-		action(scope) {
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			const prop = scope.get_reading_data(pos_syntax.BRACE)
-			val.unit = scope.buffer
-			prop.value.push(val)
-			scope.stop_reading(pos_syntax.BRACE, true)
-			const par_prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
-
-			par_prop.value.push(prop.value)
-		}
-	},
-	{
-		reading: pos_syntax.BRACE,
-		string: [pos_tokens.closebrace],
-		action(scope) {
-			scope.stop_reading(pos_syntax.BRACE, true)
-		}
-	},
-	{
-		reading: pos_syntax.VALUE,
-		string: [pos_tokens.terminate],
-		action(scope) {
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			const prop = scope.get_reading_data(pos_syntax.PROP)
-			val.value = scope.buffer
-			scope.stop_reading(pos_syntax.PROP, true)
-			prop.value.push(val)
-			pos_actions.done(scope, prop)
-		}
-	},
-	{
-		reading: pos_syntax.UNIT,
-		string: [pos_tokens.terminate],
-		action(scope) {
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			const prop = scope.get_reading_data(pos_syntax.PROP)
-			val.unit = scope.buffer
-			scope.stop_reading(pos_syntax.PROP, true)
-			prop.value.push(val)
-			pos_actions.done(scope, prop)
-		}
-	},
-	{
-		reading: pos_syntax.VALUE,
-		string: [pos_tokens.numeric],
-		action(scope) {
-			return {buffer:scope.currentCharacter}
-		}
-	},
-	{
-		reading: pos_syntax.VALUE,
-		string: [pos_tokens.operators],
-		action(scope) {
-			const prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			val.value = scope.buffer
-			prop.value.push(val)
-			prop.value.push({operator:scope.currentCharacter})
-			scope.stop_reading(pos_syntax.VALUE)
-		}
-	},
-	{
-		reading: pos_syntax.PROPVAL,
-		string: [pos_tokens.operators],
-		action(scope) {
-			const prop = scope.get_reading_data(pos_syntax.PROP)
-			prop.value.push({operator:scope.currentCharacter})
-		}
-	},
-	{
-		reading: pos_syntax.UNIT,
-		string: [pos_tokens.operators],
-		action(scope) {
-			const prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			val.unit = scope.buffer
-			prop.value.push(val)
-			prop.value.push({operator:scope.currentCharacter})
-			scope.stop_reading(pos_syntax.UNIT)
-			scope.stop_reading(pos_syntax.VALUE)
-			// scope.start_reading(pos_syntax.VALUE, {value:'',unit:false})
-		}
-	},
-	{
-		reading: pos_syntax.UNIT,
-		string: [pos_tokens.whitespace],
-		action(scope) {}
-	},
-	{
-		reading: pos_syntax.UNIT,
-		action(scope) {
-			return {buffer:scope.currentCharacter}
-		}
-	},
-	{
-		reading: pos_syntax.VALUE,
-		string: [pos_tokens.whitespace],
-		action(scope) {
-			const prop = scope.get_reading_data([pos_syntax.PROP, pos_syntax.BRACE])
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			val.value = scope.buffer
-			prop.value.push(val)
-			scope.stop_reading(pos_syntax.VALUE)
-		}
-	},
-	{
-		reading: pos_syntax.VALUE,
-		action(scope) {
-			const val = scope.get_reading_data(pos_syntax.VALUE)
-			val.value = scope.buffer
-			scope.start_reading(pos_syntax.UNIT)
-			return {buffer:scope.currentCharacter}
-		}
-	},
-	{
-		reading: [pos_syntax.PROPVAL, pos_syntax.BRACE],
-		string: [pos_tokens.numeric],
-		action(scope) {
-			scope.start_reading(pos_syntax.VALUE, {value:'',unit:false})
-			return {buffer:scope.currentCharacter}
-		}
-	},
-	{
-		string: [pos_tokens.whitespace],
-		action(scope) {}
-	},
-	{
-		reading: pos_syntax.PROPNAME,
-		action(scope) {
-			return {buffer:scope.currentCharacter}
-		}
-	},
-	{
-		reading: [pos_syntax.PROPVAL, pos_syntax.BRACE],
-		action(scope) {
-			return {buffer:scope.currentCharacter}
-		}
-	},
-	{
-		action(scope) {
-			scope.start_reading(pos_syntax.PROP, {})
-			scope.start_reading(pos_syntax.PROPNAME)
-			return {buffer:scope.currentCharacter}
-		}
-	}
-], {
-	default: {
-		inst: () => '',
-		dump: inst => inst,
-		write: (inst, dat) => inst+dat
-	}
-},
-pos_syntax,
-pos_tokens,
-)
 
 
 const instance = (instanceOptions) => {
 	// TODO: Extract that which is not configurable to make a generic "htma_parser"
 
+	const attr_trans = instanceOptions.transformations.attributes || {}
+
+	const attribute_transformer = prop => {
+		const attr_tr = attr_trans[prop]
+		if (attr_tr)
+			return { ...attr_trans.DEFAULT, ...attr_tr }
+		return attr_trans.DEFAULT
+	}
+
+	const transform_attributes = (attrs, orig={}) =>
+		Object
+			.entries(attrs)
+			.reduce(transform_attribute, orig)
+
+	const transform_attribute = (acc, [ prop, val ]) => {
+		const attr_tr = attribute_transformer(prop)
+
+		if (attr_tr.validate && !attr_tr.validate(val))
+			return acc
+
+		if (attr_tr.trans) {
+			const transed = attr_tr.trans[val]
+
+			if (transed)
+				return transform_attributes(transed, acc)
+
+			return acc
+		}
+		return add_attribute(acc, prop, val)
+	}
+
+	const add_attribute = (attrs, attr, attrVal) => {
+		const attr_tr = attribute_transformer(attr)
+		return {
+			...attrs,
+			[attr]: attr_tr.add(
+				attrs[attr],
+				attr_tr.parse(attrVal)
+			)
+		}
+	}
+
+
+	const css_tokens = instanceOptions.css.tokens || {}
+	const css_transformations = instanceOptions.css.transformations.properties || {}
+	const css_syntax = {
+		PROP: 'property',
+		PROPNAME: 'propertyname',
+		PROPVAL: 'propertyvalue',
+		VALUE: 'value',
+		UNIT: 'unit',
+		BRACE: 'bracket'
+	}
+	// TODO: enforce no unit on b for a/b
+	// TODO: enforce no unit on a or b for a*b
+	const css_actions = {
+		value(scope, value, calced = false) {
+			let out = ''
+
+			const isCalc = !calced && value.some(v => v.operator)
+			if (isCalc)
+				out += 'calc('
+
+			out += value
+				.map((p, i, l) => {
+					if (typeof p === 'string')
+						return p
+
+					const prev = l[i-1]
+					if (Array.isArray(p))
+						return `${(prev && prev.operator)?' ':''}(${css_actions.value(scope, p, calced || isCalc)})`
+
+					if (p.operator)
+						return ' '+p.operator
+
+					return `${i===0?'':' '}${p.value}${p.unit||'px'}`
+				}).join('')
+
+			if (isCalc)
+				out += ')'
+
+			return out
+		},
+		done(scope, prop) {
+			if (prop.value) {
+				scope.writer.write(prop.name, css_actions.value(scope, prop.value))
+			} else
+			if (css_transformations[prop.name]) {
+				Object.entries(css_transformations[prop.name])
+					.forEach(pv => {
+						scope.writer.write(...pv)
+					});
+			}
+		}
+	}
+
+	const css_parser = parser([
+		{
+			reading: 'END',
+			action(scope) {
+				if (scope.is_reading(this.syntax.PROPNAME)) {
+					const prop = scope.get_reading_data(this.syntax.PROP)
+					scope.stop_reading(this.syntax.PROP, true)
+					prop.name = scope.buffer
+					css_actions.done(scope, prop)
+				} else
+				if (scope.is_reading(this.syntax.PROPVAL)) {
+					const prop = scope.get_reading_data(this.syntax.PROP)
+					scope.stop_reading(this.syntax.PROP, true)
+					const read = scope.buffer
+					if (read)
+						prop.value.push(read)
+					css_actions.done(scope, prop)
+				} else
+				if (scope.is_reading(this.syntax.VALUE)) {
+					const val = scope.get_reading_data(this.syntax.VALUE)
+					const prop = scope.get_reading_data(this.syntax.PROP)
+					val.value = scope.buffer
+					scope.stop_reading(this.syntax.PROP, true)
+					prop.value.push(val)
+					css_actions.done(scope, prop)
+				} else
+				if (scope.is_reading(this.syntax.UNIT)) {
+					const val = scope.get_reading_data(this.syntax.VALUE)
+					const prop = scope.get_reading_data(this.syntax.PROP)
+					val.unit = scope.buffer
+					scope.stop_reading(this.syntax.PROP, true)
+					prop.value.push(val)
+					css_actions.done(scope, prop)
+				}
+			}
+		},
+		{
+			reading: "PROPNAME",
+			string: [css_tokens.assign],
+			action(scope) {
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				prop.name = scope.buffer
+				prop.value = []
+				scope.stop_reading(this.syntax.PROPNAME)
+				scope.start_reading(this.syntax.PROPVAL)
+			}
+		},
+		{
+			reading: "PROPNAME",
+			string: [css_tokens.terminate],
+			action(scope) {
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				scope.stop_reading(this.syntax.PROP, true)
+				prop.name = scope.buffer
+				css_actions.done(scope, prop)
+			}
+		},
+		{
+			reading: "PROPVAL",
+			string: [css_tokens.terminate],
+			action(scope) {
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				scope.stop_reading(this.syntax.PROP, true)
+				const read = scope.buffer
+				if (read)
+					prop.value.push(read)
+				css_actions.done(scope, prop)
+			}
+		},
+		{
+			reading: "BRACE",
+			string: [css_tokens.terminate],
+			action(scope) {
+				throw new Error('Unclosed bracket')
+			}
+		},
+		{
+			reading: "PROPVAL",
+			string: [css_tokens.openbrace],
+			action(scope) {
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				const read = scope.buffer
+				if (read)
+					prop.value.push(read)
+				scope.start_reading(this.syntax.BRACE, {value:[]})
+			}
+		},
+		{
+			reading: "VALUE",
+			string: [css_tokens.closebrace],
+			condition(scope) {
+				return scope.is_reading(this.syntax.BRACE, true)
+			},
+			action(scope) {
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				const prop = scope.get_reading_data(this.syntax.BRACE)
+				val.value = scope.buffer
+				prop.value.push(val)
+				scope.stop_reading(this.syntax.BRACE, true)
+				const par_prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+
+				par_prop.value.push(prop.value)
+			}
+		},
+		{
+			reading: "UNIT",
+			string: [css_tokens.closebrace],
+			action(scope) {
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				const prop = scope.get_reading_data(this.syntax.BRACE)
+				val.unit = scope.buffer
+				prop.value.push(val)
+				scope.stop_reading(this.syntax.BRACE, true)
+				const par_prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+
+				par_prop.value.push(prop.value)
+			}
+		},
+		{
+			reading: "BRACE",
+			string: [css_tokens.closebrace],
+			action(scope) {
+				scope.stop_reading(this.syntax.BRACE, true)
+			}
+		},
+		{
+			reading: "VALUE",
+			string: [css_tokens.terminate],
+			action(scope) {
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				val.value = scope.buffer
+				scope.stop_reading(this.syntax.PROP, true)
+				prop.value.push(val)
+				css_actions.done(scope, prop)
+			}
+		},
+		{
+			reading: "UNIT",
+			string: [css_tokens.terminate],
+			action(scope) {
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				val.unit = scope.buffer
+				scope.stop_reading(this.syntax.PROP, true)
+				prop.value.push(val)
+				css_actions.done(scope, prop)
+			}
+		},
+		{
+			reading: "VALUE",
+			string: [css_tokens.numeric],
+			action(scope) {
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			reading: "VALUE",
+			string: [css_tokens.operators],
+			action(scope) {
+				const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				val.value = scope.buffer
+				prop.value.push(val)
+				prop.value.push({operator:scope.currentCharacter})
+				scope.stop_reading(this.syntax.VALUE)
+			}
+		},
+		{
+			reading: "PROPVAL",
+			string: [css_tokens.operators],
+			action(scope) {
+				const prop = scope.get_reading_data(this.syntax.PROP)
+				prop.value.push({operator:scope.currentCharacter})
+			}
+		},
+		{
+			reading: "UNIT",
+			string: [css_tokens.operators],
+			action(scope) {
+				const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				val.unit = scope.buffer
+				prop.value.push(val)
+				prop.value.push({operator:scope.currentCharacter})
+				scope.stop_reading(this.syntax.UNIT)
+				scope.stop_reading(this.syntax.VALUE)
+				// scope.start_reading(this.syntax.VALUE, {value:'',unit:false})
+			}
+		},
+		{
+			reading: "UNIT",
+			string: [css_tokens.whitespace],
+			action(scope) {}
+		},
+		{
+			reading: "UNIT",
+			action(scope) {
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			reading: "VALUE",
+			string: [css_tokens.whitespace],
+			action(scope) {
+				const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				val.value = scope.buffer
+				prop.value.push(val)
+				scope.stop_reading(this.syntax.VALUE)
+			}
+		},
+		{
+			reading: "VALUE",
+			action(scope) {
+				const val = scope.get_reading_data(this.syntax.VALUE)
+				val.value = scope.buffer
+				scope.start_reading(this.syntax.UNIT)
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			reading: ["PROPVAL", "BRACE"],
+			string: [css_tokens.numeric],
+			action(scope) {
+				scope.start_reading(this.syntax.VALUE, {value:'',unit:false})
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			string: [css_tokens.whitespace],
+			action(scope) {}
+		},
+		{
+			reading: "PROPNAME",
+			action(scope) {
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			reading: ["PROPVAL", "BRACE"],
+			action(scope) {
+				return {buffer:scope.currentCharacter}
+			}
+		},
+		{
+			string: [css_tokens.terminate],
+			action(scope) {
+				return {buffer:''}
+			}
+		},
+		{
+			not_reading: 'START',
+			action(scope) {
+				scope.start_reading(this.syntax.PROP, {})
+				scope.start_reading(this.syntax.PROPNAME)
+				return {buffer:scope.currentCharacter}
+			}
+		}
+	], {
+			object: {
+				inst: () => ({}),
+				dumpString: inst => Object.entries(inst).map(([p,v]) => `${p}:${v};`).join(''),
+				dump: inst => inst,
+				write: (inst, prop, val) => ({
+					...inst,
+					[prop]: val
+				})
+			},
+			default: {
+				inst: () => '',
+				dump: inst => inst,
+				write: (inst, prop, val) => inst+`${prop}:${val};`
+			},
+		},
+		css_syntax,
+		css_tokens,
+	)
+
+
+
+
 	const actions = {
 		inline_expression(tag) {
 			return tag.attrs.id+((tag.attrs.class && tag.attrs.class.length) ? ('.'+tag.attrs.class.join('.')) : '')
-		},
-		attribute(tag, attr, attrVal) {
-			const attr_tr = attr_trans[attr] || default_attr
-			if (!(attr in tag.attrs))
-				tag.attrs[attr] = attr_tr.init()
-			tag.attrs[attr] = attr_tr.add(tag.attrs[attr], attr_tr.parse(attrVal))
 		},
 		open_tag(scope, tag, passthrough) {
 			const conditional = scope.currentCondition
@@ -1372,21 +1338,14 @@ const instance = (instanceOptions) => {
 			}
 			if (conditional !== false && scope.currentCondition !== false && !string_is(tag.name, tag_groups.system)) {
 				const selfClosing = tag.selfClosing || self_closing_tags[tag.name] || false
-				// const attrs = tag.attrs.pos
-				// 	? {...tag.attrs, pos:undefined, ...pos_parser(tag.attrs.pos)}
-				// 	: tag.attrs
-				const attrs = Object
-					.entries(tag.attrs)
-					.reduce(transform_attribute, {})
-				// tag.attrs.pos
-				// 	? {...tag.attrs, pos:undefined, ...pos_parser(tag.attrs.pos)}
-				// 	: tag.attrs
+				const attrs = transform_attributes(tag.attrs)
 				scope.writer.open({
 					name: tag.name,
 					indent: tag.indent,
 					selfClosing,
 					attrs: Object
 						.entries(attrs)
+						.map(([ prop, val ]) => [ prop, attribute_transformer(prop).write.call(instance_object, val) ])
 				})
 				if (selfClosing)
 					scope.stop_reading(syntax.TAG, true)
@@ -1567,6 +1526,7 @@ const instance = (instanceOptions) => {
 					window.__htma__string_writer__event_callbacks[window.__htma__string_writer__event_callbacks.id] = val
 					return [prop, window.__htma__string_writer__event_callbacks.id]
 				})
+
 				const attrs = (others
 					.map(([prop, val]) =>
 						`${prop}="${encodeEntities(val)}"`))
@@ -1636,8 +1596,65 @@ const instance = (instanceOptions) => {
 			}
 		}
 
+		const object_writer = {
+			inst: () => ({
+				tracker: [{ element: {children:[]}, indent: -1 }],
+				get lastAncestor() {
+					return this.tracker[0].element
+				},
+				get firstAncestor() {
+					return this.tracker[this.tracker.length-1].element
+				},
+			}),
+			dump: inst =>
+				inst.firstAncestor.children,
+			dumpString: inst => {
+				const dumpEl = element => {
+					if (typeof element === 'string') return encodeEntities(element)
+					const { name, attributes, children, selfClosing } = element
+					return '<'
+						+ name
+						+ Object.entries(attributes).map(([p,v]) => ` ${p}="${encodeEntities(v)}"`).join('')
+						+ (selfClosing
+							? '/>'
+							: `>${children.map(dumpEl).join('')}</${name}>`)
+				}
+				return inst.firstAncestor.children.map(dumpEl).join('')
+			},
+			open: (inst, tag) => {
+				const newEl = {
+					name: tag.name,
+					attributes: Object.fromEntries(tag.attrs),
+					children: [],
+					selfClosing: tag.selfClosing
+				}
+				if (!tag.selfClosing)
+					inst.tracker.unshift({ indent: tag.indent, element: newEl })
+				const ancestor = inst.tracker.find(({ indent }) => indent < tag.indent).element
+				ancestor.children.push(newEl)
+			},
+			close: (inst, tag) => {
+				inst.tracker.shift()
+			},
+			content: (inst, content) => {
+				const ancestor = inst.lastAncestor
+				ancestor.children.push(content.toString())
+			},
+			nest: (inst, contents, arguments, options) => {
+				const ancestor = inst.lastAncestor
+
+				const els = parse(
+					contents,
+					arguments,
+					{ ...options, outputString: false }
+				)
+				ancestor.children = ancestor.children.concat(els)
+			}
+		}
+
 		return {
 			default: string_writer,
+			object: object_writer,
 			string: string_writer,
 			dom: dom_writer
 		}
@@ -1665,26 +1682,26 @@ const instance = (instanceOptions) => {
 		{
 			reading: "START",
 			action(scope) {
-				scope.start_reading(syntax.INDENT)
+				scope.start_reading(this.syntax.INDENT)
 			}
 		},
 		{
 			reading: "END",
 			action(scope) {
 				// Write any remaining content
-				if (scope.is_reading(syntax.CONTENT)) {
+				if (scope.is_reading(this.syntax.CONTENT)) {
 					if (scope.currentCondition !== false)
 						scope.writer.content(scope.buffer)
-					scope.stop_reading(syntax.CONTENT)
+					scope.stop_reading(this.syntax.CONTENT)
 				}
 				// Close all remaining tags
 				actions.close_tags(scope, 0)
 			}
 		},
 		{
-			reading: syntax.LOOP,
+			reading: "LOOP",
 			action(scope, { debug, ...passthrough }) {
-				const tag = scope.get_reading_data(syntax.TAG)
+				const tag = scope.get_reading_data(this.syntax.TAG)
 				const loop = scope.reading_data
 				if (string_is(scope.currentCharacter, string_groups.newline)) {
 					loop.indent = 0
@@ -1700,15 +1717,15 @@ const instance = (instanceOptions) => {
 			}
 		},
 		{
-			reading: syntax.TAGNAME,
+			reading: "TAGNAME",
 			string: [string_groups.indent, string_groups.newline, string_groups.idmarker, string_groups.classseparator, string_groups.closetag],
 			action(scope, passthrough) {
-				const tag = scope.get_reading_data(syntax.TAG)
+				const tag = scope.get_reading_data(this.syntax.TAG)
 				const tagName = scope.buffer
 				const canonName = tagAliases[tagName] || tagName
 				const finalName = custom_components[canonName] ? canonName : canonName.toLowerCase()
 				tag.name = tagAliases[tagName] || tagName
-				scope.stop_reading(syntax.TAGNAME)
+				scope.stop_reading(this.syntax.TAGNAME)
 				if (!string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true) !== undefined) {
 					// console.log(tag, tag.eval)
 					scope.setCondition(tag.indent, undefined)
@@ -1718,164 +1735,164 @@ const instance = (instanceOptions) => {
 					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.idmarker)) {
-					scope.start_reading(syntax.ID)
+					scope.start_reading(this.syntax.ID)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.classseparator)) {
-					scope.start_reading(syntax.CLASS)
+					scope.start_reading(this.syntax.CLASS)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
-					scope.start_reading(syntax.TAGCONTENT)
+					scope.start_reading(this.syntax.TAGCONTENT)
 					if (string_is(scope.currentCharacter, string_groups.newline)) {
-						scope.start_reading(syntax.INDENT)
+						scope.start_reading(this.syntax.INDENT)
 					}
 				}
 			}
 		},
 		{
 			condition(scope) {
-				return scope.is_reading(syntax.TAGCONTENT, true) && scope.is_reading(syntax.ATTRNAME)
+				return scope.is_reading(this.syntax.TAGCONTENT, true) && scope.is_reading(this.syntax.ATTRNAME)
 			},
 			string: [string_groups.indent, string_groups.newline, string_groups.closetag, string_groups.attrassign],
 			action(scope, passthrough) {
 
-				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
 
 				const attributeAliases = tagAttributeAliases[tag.name] || {}
 				const attrName = scope.buffer.toLowerCase()
 				tag.current_attr = attributeAliases[attrName] || commonAttributeAliases[attrName] || attrName
-				scope.stop_reading(syntax.ATTRNAME)
+				scope.stop_reading(this.syntax.ATTRNAME)
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
-					scope.stop_reading(syntax.ATTR)
-					scope.stop_reading(syntax.TAGCONTENT, true)
+					scope.stop_reading(this.syntax.ATTR)
+					scope.stop_reading(this.syntax.TAGCONTENT, true)
 					if (scope.currentCondition)
 						tag.attrs[tag.current_attr] = true
 					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.attrassign)) {
-					scope.start_reading(syntax.ATTRVAL, {value:''})
+					scope.start_reading(this.syntax.ATTRVAL, {value:''})
 				} else
 				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
 					if (scope.currentCondition)
 						tag.attrs[tag.current_attr] = true
-					scope.stop_reading(syntax.ATTR)
+					scope.stop_reading(this.syntax.ATTR)
 					if (string_is(scope.currentCharacter, string_groups.newline)) {
-						scope.start_reading(syntax.INDENT)
+						scope.start_reading(this.syntax.INDENT)
 					}
 				}
 			}
 		},
 		{
-			reading: syntax.ATTRVAL,
+			reading: "ATTRVAL",
 			string: [string_groups.indent, string_groups.newline, string_groups.closetag],
 			action(scope, passthrough) {
 				const attributeCondition = scope.currentCondition
-				const prevVal = scope.get_reading_data(syntax.ATTRVAL).value
+				const prevVal = scope.get_reading_data(this.syntax.ATTRVAL).value
 				const curVal = scope.buffer
 				const attrVal = prevVal ? (prevVal + curVal) : curVal
 
-				scope.stop_reading(syntax.ATTRVAL)
-				scope.stop_reading(syntax.ATTR)
-				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+				scope.stop_reading(this.syntax.ATTRVAL)
+				scope.stop_reading(this.syntax.ATTR)
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
 
 				if (attributeCondition)
-					actions.attribute(tag, tag.current_attr, attrVal)
+					tag.attrs = add_attribute(tag.attrs, tag.current_attr, attrVal)
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
-					scope.stop_reading(syntax.TAGCONTENT)
+					scope.stop_reading(this.syntax.TAGCONTENT)
 					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.newline)) {
-					scope.start_reading(syntax.INDENT)
+					scope.start_reading(this.syntax.INDENT)
 				}
 				return { setBuffer: '' }
 			}
 		},
 		{
 			condition(scope) {
-				return scope.is_reading(syntax.ID) || scope.is_reading(syntax.CLASS)
+				return scope.is_reading(this.syntax.ID) || scope.is_reading(this.syntax.CLASS)
 			},
 			string: [string_groups.indent, string_groups.newline, string_groups.classseparator, string_groups.closetag],
 			action (scope, passthrough) {
-				const tag = scope.get_reading_data(syntax.TAG)
-				if (scope.is_reading(syntax.ID)) {
+				const tag = scope.get_reading_data(this.syntax.TAG)
+				if (scope.is_reading(this.syntax.ID)) {
 					tag.attrs.id = scope.buffer
-					scope.stop_reading(syntax.ID)
+					scope.stop_reading(this.syntax.ID)
 				} else
-				if (scope.is_reading(syntax.CLASS)) {
-					actions.attribute(tag, 'class', scope.buffer)
-					scope.stop_reading(syntax.CLASS)
+				if (scope.is_reading(this.syntax.CLASS)) {
+					tag.attrs = add_attribute(tag.attrs, 'class', scope.buffer)
+					scope.stop_reading(this.syntax.CLASS)
 				}
 
 				if (string_is(scope.currentCharacter, string_groups.closetag)) {
 					return actions.open_tag(scope, tag, passthrough)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.classseparator)) {
-					scope.start_reading(syntax.CLASS)
+					scope.start_reading(this.syntax.CLASS)
 				} else
 				if (string_is(scope.currentCharacter, string_groups.indent, string_groups.newline)) {
-					scope.start_reading(syntax.TAGCONTENT)
+					scope.start_reading(this.syntax.TAGCONTENT)
 					if (string_is(scope.currentCharacter, string_groups.newline)) {
-						scope.start_reading(syntax.INDENT)
+						scope.start_reading(this.syntax.INDENT)
 					}
 				}
 			},
 		},
 		{
 			condition(scope) {
-				return scope.is_reading(syntax.STRING, true) && scope.is_reading(syntax.ESCAPE)
+				return scope.is_reading(this.syntax.STRING, true) && scope.is_reading(this.syntax.ESCAPE)
 			},
 			action(scope){
-				scope.stop_reading(syntax.ESCAPE)
+				scope.stop_reading(this.syntax.ESCAPE)
 				return { buffer: '\\'+scope.currentCharacter }
 			}
 		},
 		{
 			condition(scope, s) {
-				return scope.is_reading(syntax.STRING) && !scope.is_reading(syntax.ESCAPE) && string_is(s, string_groups.escape)
+				return scope.is_reading(this.syntax.STRING) && !scope.is_reading(this.syntax.ESCAPE) && string_is(s, string_groups.escape)
 			},
 			action(scope){
-				scope.start_reading(syntax.ESCAPE)
+				scope.start_reading(this.syntax.ESCAPE)
 			}
 		},
 		{
 			condition(scope, s) {
 				return array_sliceAt(scope.reading,
-							({ type }) => type === syntax.STRING)
-						.every	(({ type }) => type !== syntax.ATTRVAL) &&
+							({ type }) => type === this.syntax.STRING)
+						.every	(({ type }) => type !== this.syntax.ATTRVAL) &&
 
-				// scope.is_reading(syntax.STRING, true) &&
-					!scope.is_reading(syntax.ESCAPE) &&
-					s === scope.get_reading_data(syntax.STRING).open
+				// scope.is_reading(this.syntax.STRING, true) &&
+					!scope.is_reading(this.syntax.ESCAPE) &&
+					s === scope.get_reading_data(this.syntax.STRING).open
 			},
 			action(scope){
-				scope.stop_reading(syntax.STRING, true)
+				scope.stop_reading(this.syntax.STRING, true)
 			}
 		},
 		{
 			string: [string_groups.opentag],
 			action(scope) {
 				const child_tag = {attrs:{}}
-				if (scope.is_reading(syntax.ATTRVAL, true)) {
-					scope.get_reading_data(syntax.ATTRVAL).value = scope.buffer
+				if (scope.is_reading(this.syntax.ATTRVAL, true)) {
+					scope.get_reading_data(this.syntax.ATTRVAL).value = scope.buffer
 				} else
-				if (scope.is_reading(syntax.INDENT)) {
+				if (scope.is_reading(this.syntax.INDENT)) {
 					child_tag.indent = scope.buffer.length
-					scope.stop_reading(syntax.INDENT)
+					scope.stop_reading(this.syntax.INDENT)
 					actions.close_tags(scope, child_tag.indent)
 				} else
-				if (scope.is_reading(syntax.TAGCONTENT)) {
+				if (scope.is_reading(this.syntax.TAGCONTENT)) {
 				} else
-				if (scope.is_reading(syntax.CONTENT)) {
+				if (scope.is_reading(this.syntax.CONTENT)) {
 					if (scope.currentCondition !== false)
 						scope.writer.content(scope.buffer)
 				}
-				scope.start_reading(syntax.TAG, child_tag)
-				scope.start_reading(syntax.TAGNAME)
+				scope.start_reading(this.syntax.TAG, child_tag)
+				scope.start_reading(this.syntax.TAGNAME)
 			}
 		},
 		{
-			reading: syntax.STRING,
+			reading: "STRING",
 			action(scope) {
 				return {buffer:scope.currentCharacter}
 			}
@@ -1883,15 +1900,15 @@ const instance = (instanceOptions) => {
 		{
 			string: [string_groups.selfclose],
 			condition(scope) {
-				return !scope.is_reading(syntax.STRING) && scope.is_reading(syntax.TAG, true) && string_is(scope.followingCharacter, string_groups.closetag)
+				return !scope.is_reading(this.syntax.STRING) && scope.is_reading(this.syntax.TAG, true) && string_is(scope.followingCharacter, string_groups.closetag)
 			},
 			action(scope) {
-				const tag = scope.get_reading_data(syntax.TAG)
+				const tag = scope.get_reading_data(this.syntax.TAG)
 				tag.selfClosing = true
 			}
 		},
 		{
-			reading: syntax.ATTRVAL,
+			reading: "ATTRVAL",
 			string: [string_groups.quote],
 			condition (scope) {
 				const existing_buffer = scope.buffer
@@ -1899,18 +1916,18 @@ const instance = (instanceOptions) => {
 				return !existing_buffer
 			},
 			action(scope){
-				scope.start_reading(syntax.STRING, { open: scope.currentCharacter })
+				scope.start_reading(this.syntax.STRING, { open: scope.currentCharacter })
 			}
 		},
 		{
 			condition(scope) {
-				return scope.is_reading(syntax.TAGCONTENT, true)
+				return scope.is_reading(this.syntax.TAGCONTENT, true)
 			},
 			string: [string_groups.closetag],
 			action(scope, passthrough) {
-				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === syntax.TAGCONTENT)+1].data
+				const tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
 
-				scope.stop_reading(syntax.TAGCONTENT, true)
+				scope.stop_reading(this.syntax.TAGCONTENT, true)
 
 				return actions.open_tag(scope, tag, passthrough)
 			}
@@ -1918,49 +1935,49 @@ const instance = (instanceOptions) => {
 		{
 			string: [string_groups.newline],
 			action (scope) {
-				if (scope.is_reading(syntax.CONTENT)) {
+				if (scope.is_reading(this.syntax.CONTENT)) {
 					if (scope.currentCondition !== false)
 						scope.writer.content(scope.buffer)
-					scope.stop_reading(syntax.CONTENT)
-					scope.start_reading(syntax.INDENT)
+					scope.stop_reading(this.syntax.CONTENT)
+					scope.start_reading(this.syntax.INDENT)
 				} else
-				if (scope.is_reading(syntax.INDENT)) {
+				if (scope.is_reading(this.syntax.INDENT)) {
 				} else
 				{
 					if (scope.currentCondition !== false)
 						scope.writer.content(scope.buffer)
-					scope.start_reading(syntax.INDENT)
+					scope.start_reading(this.syntax.INDENT)
 				}
 				return { setBuffer: '' }
 			}
 		},
 		{
 			condition(scope, s) {
-				return scope.is_reading(syntax.TAGCONTENT, true)
+				return scope.is_reading(this.syntax.TAGCONTENT, true)
 						&& array_sliceAt(scope.reading,
-									({ type }) => type === syntax.TAGCONTENT)
-								.every	(({ type }) => !string_is(type, [syntax.ATTR, syntax.TAGNAME, syntax.ID, syntax.CLASS, 'tagvalue']))
+									({ type }) => type === this.syntax.TAGCONTENT)
+								.every	(({ type }) => !string_is(type, [this.syntax.ATTR, this.syntax.TAGNAME, this.syntax.ID, this.syntax.CLASS, 'tagvalue']))
 						&& !string_is(s, string_groups.indent, string_groups.newline)
 			},
 			action(scope) {
 				const attr_data = {}
-				if (scope.is_reading(syntax.INDENT)) {
+				if (scope.is_reading(this.syntax.INDENT)) {
 					attr_data.indent = scope.buffer.length
-					scope.stop_reading(syntax.INDENT)
+					scope.stop_reading(this.syntax.INDENT)
 				}
-				scope.start_reading(syntax.ATTR, attr_data)
-				scope.start_reading(syntax.ATTRNAME)
+				scope.start_reading(this.syntax.ATTR, attr_data)
+				scope.start_reading(this.syntax.ATTRNAME)
 				return { setBuffer: scope.currentCharacter }
 			}
 		},
 		{
-			reading: syntax.INDENT,
+			reading: "INDENT",
 			condition(scope, s) {
 				return !string_is(s, string_groups.indent)
 			},
 			action(scope) {
-				scope.stop_reading(syntax.INDENT)
-				scope.start_reading(syntax.CONTENT, { indent: scope.buffer.length })
+				scope.stop_reading(this.syntax.INDENT)
+				scope.start_reading(this.syntax.CONTENT, { indent: scope.buffer.length })
 				return { setBuffer: scope.currentCharacter }
 			}
 		}
@@ -1968,20 +1985,120 @@ const instance = (instanceOptions) => {
 
 	const parse = parser(conditions, writers, syntax, string_groups)
 
-	return ({
+	const instance_object = {
 		parse,
-		parse_css: pos_parser,
+		parse_css: css_parser,
 		writers,
 		custom: (opts = {}) =>
 			instance(mergeOptions(instanceOptions, opts)),
 		add: add_component
-	})
+	}
 
+	return instance_object
 }
 
-
-
 return instance({
+	css: {
+		tokens: {
+			assign: [':','='],
+			terminate: [';'],
+			whitespace: [' ','\t','\n'],
+			numeric: ['.','1','2','3','4','5','6','7','8','9','0'],
+			operators: ['-','+','/','*'],
+			openbrace: ['('],
+			closebrace: [')'],
+		},
+		transformations: {
+			properties: {
+				top: {top:'0'},
+				bottom: {bottom:'0'},
+				left: {left:'0'},
+				right: {right:'0'},
+				relative: {position:'relative'},
+				absolute: {position:'absolute'},
+				static: {position:'static'},
+				fixed: {position:'fixed'},
+				'border-box': {'box-sizing':'border-box'},
+				'content-box': {'box-sizing':'content-box'},
+				'padding-box': {'box-sizing':'padding-box'},
+				width: {width:'100%'},
+				height: {height:'100%'},
+				ellipsis: {
+					'text-overflow': 'ellipsis',
+					overflow: 'hidden',
+					'white-space': 'nowrap'
+				},
+				scroll: {overflow:'scroll'},
+				scrollx: {'overflow-x':'scroll'},
+				scrolly: {'overflow-y':'scroll'},
+				/*
+				"overflow":{
+					"auto":		"css",
+					"hidden":	"css",
+					"visible":	"css",
+				},
+				*/
+			}
+		}
+	},
+	transformations: {
+		attributes: {
+			DEFAULT: {
+				write: val => {
+					if (val === true)
+						return ''
+					if (Array.isArray(val))
+						return val.join(' ')
+					if (typeof val === 'function')
+						return val
+					return val.toString()
+				},
+				add: (curr = '', str) => str,
+				parse: str => str,
+				validate: val => val && !(Array.isArray(val) && val.length === 0)
+			},
+			class: {
+				write: classes =>
+					classes
+						.filter(filter_truthy)
+						.filter(filter_unique)
+						.join(' '),
+				add: (currVal = [], newVal) => currVal.concat(newVal),
+				parse: str => Array.isArray(str) ? str : str.toString().split(' '),
+				validate: val => val.length
+			},
+			scroll: {
+				trans: {
+					auto: {style:{overflow:'auto'}},
+					hidden: {style:{overflow:'hidden'}},
+					visible: {style:{overflow:'visible'}},
+					scroll: {style:{overflow:'scroll'}},
+					x: {style:{'overflow-x':'scroll'}},
+					y: {style:{'overflow-y':'scroll'}}
+				}
+			},
+			style: {
+				add: (curr = '', str) => {
+					const currT = curr ? `${curr};` : curr
+					if (Array.isArray(str))
+						return currT+str.join(';')
+					const type = typeof str
+					if (type === 'string')
+						return currT+str
+					if (type === 'object')
+						return currT+Object.entries(str).map(([prop,val]) =>
+							prop.replace(/[A-Z]/gm, m =>
+								'-' + m.toLowerCase()
+							) + (val ? `:${val}` : '') + ';'
+						).join('')
+					return curr
+				},
+				write(str) {
+					return this.parse_css(str, {}, { outputString: true })
+				}
+			}
+		}
+	},
 	aliases: {
 		tags: {
 			elseif: ['elif'],
@@ -2462,7 +2579,7 @@ return instance({
 		classseparator: ['.'],
 		idmarker: ['#'],
 		quote: ['"', "'"],
-		attrassign: ['=',':'],
+		attrassign: ['=', ':'],
 		escape: ['\\'],
 		selfclose: ['/'],
 	}
