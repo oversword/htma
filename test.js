@@ -1281,14 +1281,14 @@ new HTMA_Tester()
   }
 )
 
-/*
+//*
 .variate((testcase) => [
   {...testcase,writeMode:'string'},
   {...testcase,writeMode:'dom',desc:(testcase.desc||'')+' DOM',...(testcase.expectedDOM ? {expected:testcase.expectedDOM} : {})},
   {...testcase,writeMode:'obj',desc:(testcase.desc||'')+' Object',...(testcase.expectedObj ? {expected:testcase.expectedObj} : {})},
 ])
 //*/
-/*
+//*
 .variate((testcase) => {
   const variations = [
     {

@@ -1,6 +1,8 @@
-const htma = (() => {
+window.htma = (() => {
 // Enclose everything in a scope to avoid any globals
 
+
+// String & Array helpers
 const array_sliceAt = (arr, until) => {
 	const i = arr.findIndex(until)
 	if (i === -1)
@@ -30,7 +32,10 @@ const string_is = (str, ...options) =>
 const filter_unique = (item, index, list) => list.indexOf(item) === index
 const filter_truthy = val => val
 
+
+// Helper to encode HTML entities when writing content
 const encodeEntities = (() => {
+	// This list should be comprehensive, but may need maintenance
 	const HTMLEntities = {
 		"<": "lt",
 		">": "gt",
@@ -274,20 +279,29 @@ const encodeEntities = (() => {
 		"‌": "zwnj",
 	}
 
+	// Encode single character
 	const encodeEntity = (s = "") => {
+		// If string entity exists, return that with dressing
 		const ent = HTMLEntities[s]
 		if (ent) return "&"+ent+";"
+
+		// If outside of the ASCII range, use numeric entity
 		const code = s.charCodeAt(0)
 		if (code > 127)
 			return "&#"+code.toString()+";"
+
+		// Otherwise, return original character
 		return s
 	}
 
+	// Encode entire string one character at a time
 	const encodeEntities = (str = "") => [...str].map(encodeEntity).join('')
 
 	return encodeEntities
 })()
 
+
+// Invert { canon: alias[] } to { alias: canon }
 const invertAliasIndex = aliasIndex =>
 	Object
 		.entries(aliasIndex)
@@ -297,27 +311,75 @@ const invertAliasIndex = aliasIndex =>
 					({ ...a, [alias]: canon }), acc),
 			{})
 
-const nest_props = (props, args) =>
-	new Proxy(props, {
+
+// Weird object inheritance
+const nest_props = (parent, child) =>
+	// Allow child to inherit from parent with both get & set
+	new Proxy(parent, {
 		get (target, prop) {
-			if (prop in args)
-				return args[prop]
+			// Check in child first
+			if (prop in child)
+				return child[prop]
+			// Otherwise, check parent
 			const got = target[prop]
+			// Allow methods to keep their scope
 			if (typeof got === 'function')
 				return got.bind(target)
 			return got
 		},
 		set (target, prop, val) {
-			if (prop in args)
-				args[prop] = val
-			else
+			// Check in child first
+			if (prop in child)
+				child[prop] = val
+			else // Otherwise, check parent
 				target[prop] = val
 			return true
 		}
 	})
 
+const mergeOptions = (def, ovr) => {
+	// Merge two instance options objects
+
+	const ret = {}
+
+	// Merge anything that exists in the default
+	for (const k in def) {
+		// Allow deletion by setting to null
+		if (ovr[k] === null) continue
+		// Merge sub-objects, but not arrays
+		if (
+			(typeof def[k] === 'object' && !Array.isArray(def[k])) ||
+			(typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
+		)
+			ret[k] = mergeOptions(def[k], ovr[k] || {})
+		// Use value and fall back to default
+		ret[k] = ovr[k] || def[k]
+	}
+
+	// Merge anything else that exists in the override
+	for (const k in ovr) {
+		// Allow deletion by setting to null
+		if (ovr[k] === null) continue
+		// If it's in def it's already been done above
+		if (k in def) continue
+		// Clone sub-objects, but not arrays
+		if (typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
+			ret[k] = mergeOptions({}, ovr[k])
+		// Use value
+		ret[k] = ovr[k]
+	}
+
+	return ret
+}
+
+
+// Helper classes for parser
 class Executor {
+	// Containment class for executing arbitrary code in user-defined expressions
+
+	// List of allowed keywords that are not interpreted as variable names
 	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null']
+	// Keywords in a lookup table for quick access
 	#keywords = {}
 	constructor() {
 		this.#keywords = Object.fromEntries(this.#keyword_list.map(kw => [kw,1]))
@@ -328,6 +390,7 @@ class Executor {
 		// Override globals to disallow access from inside the eval
 		{ window, globals, global, document } = {}
 	) => {
+		// Wrapper for eval that returns the result of the expression
 		let result
 		try {
 			eval(`result = (${exp})`)
@@ -338,6 +401,7 @@ class Executor {
 	}
 
 	rebase_vars (expression, newBase) {
+		// Prefix all variable names in the expression with scope variable
 
 		let replace_feed = expression
 		let replace_result = ''
@@ -366,39 +430,58 @@ class Executor {
 	}
 
 	exec (expression, internal_props) {
+		// Execute an expression with the given scope variable
 		return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), internal_props)
-		// return Executor.evaluate_expression(this.rebase_vars(expression, 'internal_props'), {...internal_props})
 	}
 
 	prep (expression, internal_props) {
+		// Prepare a function to execute an expression with the given scope variable and any additional arguments
 		const exp = this.rebase_vars(expression, 'internal_props')
-		return args => {
-			return Executor.evaluate_expression(exp, nest_props(internal_props, args))
-				// { ...internal_props, ...args })
-			// return Executor.evaluate_expression(exp, { ...internal_props, ...args })
-		}
+		return args => Executor.evaluate_expression(exp, nest_props(internal_props, args))
 	}
 }
 
 class Scope {
 	#string = ''
-	constructor (string = '', props = {}, executor) {
+	#writer = {}
+	#writer_instance
+	constructor (string = '', props = {}, writer = {}) {
 		this.#string = string
-		this.#props = props//{...props}
-		this.#executor = executor || new Executor()
+		this.#props = props
+
+		const dump_fun = method => (...args) => method(this.#writer_instance, ...args)
+		const mod_fun = method => (...args) => {
+			const result = method(this.#writer_instance, ...args)
+			if (typeof result !== 'undefined')
+				this.#writer_instance = result
+		}
+
+		this.#writer_instance = writer.inst()
+		this.#writer = Object.fromEntries(
+			Object.entries(writer)
+			.map(([ name, method ]) => [
+				name,
+				['dump','dumpString'].includes(name)
+				? dump_fun(method)
+				: mod_fun(method)
+			])
+		)
 	}
 
+	get writer() {
+		return {...this.#writer}
+	}
 
 	#props = {}
 	get props() {
-		return this.#props//{...this.#props}
+		return this.#props
 	}
-	#executor
+	#executor = new Executor()
 	exec(expression) {
-		return this.#executor.exec(expression, this.#props)//{...this.#props})
+		return this.#executor.exec(expression, this.#props)
 	}
 	prep(expression) {
-		return this.#executor.prep(expression, this.#props)//{...this.#props})
+		return this.#executor.prep(expression, this.#props)
 	}
 
 
@@ -489,7 +572,7 @@ class Scope {
 		return {
 			buffer: this.#buffer,
 			output: (this.#writer.dumpString || this.#writer.dump)(),
-			reading: [...this.#reading],
+			syntax: [...this.#reading],
 			conditions: Object.entries(this.#conditions),
 			conditional: this.currentCondition,
 		}
@@ -510,45 +593,28 @@ class Scope {
 		return this.#string[this.#index+1]
 	}
 
-	#writer = {}
-	#writer_instance
-	set writer(newWriter) {
-
-		const dump_fun = method => (...args) => method(this.#writer_instance, ...args)
-		const mod_fun = method => (...args) => {
-			const result = method(this.#writer_instance, ...args)
-			if (typeof result !== 'undefined')
-				this.#writer_instance = result
-		}
-
-		this.#writer_instance = newWriter.inst()
-		this.#writer = Object.fromEntries(
-			Object.entries(newWriter)
-			.map(([ name, method ]) => [
-				name,
-				['dump','dumpString'].includes(name)
-				? dump_fun(method)
-				: mod_fun(method)
-			])
-		)
-	}
-	get writer() {
-		return {...this.#writer}
-	}
 }
 
 
+// Custom component registry
 const custom_components = {}
 
 const add_component = (...args) => {
+	// Add a custom component
+
 	let name, str, o
+
+	// If there's only one argument, assume it's a class
 	if (args.length === 1){
 		const obj = args[0]
 		name = obj.name
 		str = obj.template
 		o = obj
-	}else
-		[name, str, o] = args
+	} else
+	// Otherwise, assume it string based
+	[name, str, o] = args
+
+	// Normalise defaults as a class or getter function
 	let defaults
 	if (typeof o === 'function')
 		defaults = o
@@ -557,6 +623,8 @@ const add_component = (...args) => {
 		defaults = function () { return {...o} }
 	else
 		defaults = function () { return {} }
+
+	// Register component
 	custom_components[name] = {
 		template: str,
 		defaults
@@ -564,122 +632,157 @@ const add_component = (...args) => {
 }
 
 
-const mergeOptions = (def, ovr) => {
-	const ret = {}
-	for (const k in def) {
-		if (ovr[k] === null) continue
-		if (
-			(typeof def[k] === 'object' && !Array.isArray(def[k])) ||
-			(typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
-		)
-			ret[k] = mergeOptions(def[k], ovr[k] || {})
-		ret[k] = ovr[k] || def[k]
-	}
-	for (const k in ovr) {
-		if (ovr[k] === null) continue
-		if (k in def) continue
-		if (typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
-			ret[k] = mergeOptions({}, ovr[k])
-		ret[k] = ovr[k]
-	}
-	return ret
-}
-
-
+// Parser definitions
 const parser = (conditions = [], syntax_list = [], token_list = [], writer_interface = {}) => {
+	// Define a parser for a particular language
 
+	// SYNTAX VALUES
+	// Syntax used by the system
 	const system_syntax = ['START','END','DEFAULT']
+	// Check all syntax values for validity
 	syntax_list.forEach(syn => {
 		if (system_syntax.includes(syn))
 			throw new Error(`Invalid parser syntax value: "${syn}". This value is reserved by the system.`)
 	})
+	// Create a lookup table for the syntax values
 	const syntax = Object.fromEntries(
 		[].concat(
 			syntax_list.map(syn => [ syn.toUpperCase(), `syntax_${syn.toLowerCase()}` ]),
 			system_syntax.map(syn => [ syn.toUpperCase(), `syntax_system_${syn.toLowerCase()}` ])
 		)
 	)
-	const syntax_inverted = Object.fromEntries(Object.entries(syntax).map(a => a.reverse()))
 
+	// TOKEN VALUES
+	// Tokens used by the system
 	const system_tokens = ['DEFAULT']
+	// Check all token values for validity
 	token_list.forEach(tok => {
 		if (system_tokens.includes(tok))
 			throw new Error(`Invalid parser token value: "${tok}". This value is reserved by the system.`)
 	})
+	// Create a lookup table for the token values
 	const tokens = Object.fromEntries(
 		[].concat(
 			token_list.map(tok => [ tok.toUpperCase(), `token_${tok.toLowerCase()}` ]),
 			system_tokens.map(tok => [ tok.toUpperCase(), `token_system_${tok.toLowerCase()}` ]),
 		)
 	)
-	const tokens_inverted = Object.fromEntries(Object.entries(tokens).map(a => a.reverse()))
 
-	const getConditionMatcher = (scope, instance) => ({ condition }) =>
-		(!condition || condition.call(instance, scope, scope.currentCharacter))
-
+	// Fallback action when no condition is met: append current character to buffer
 	const defaultAction = scope => ({ buffer: scope.currentCharacter })
 
+	// Normalise a syntax or token condition into an array
+	const normalise_condition = (name, cond) => {
+		const map = name.includes('syntax') ? syntax : tokens
+		const evalled = (typeof cond === 'function') ? cond(map) : cond
+		if (!evalled) return {}
+		const arrayed = Array.isArray(evalled) ? evalled : [evalled]
+		return {[name]:arrayed.map(v => map[v.toUpperCase()] || v.toLowerCase()).filter(filter_unique)}
+	}
+
+	// Normalise all the conditions to simplify the logic down the line
+	const normalised_conditions = conditions.map(({ syntax, not_syntax, tokens, not_tokens, action, condition }) => ({
+		action,
+		...(condition ? {condition} : {}),
+		...normalise_condition('syntax', syntax),
+		...normalise_condition('not_syntax', not_syntax),
+		...normalise_condition('tokens', tokens),
+		...normalise_condition('not_tokens', not_tokens),
+	}))
+
+	// Create a lookup table for the conditions as { syntax: { token: condition[] } } for quick access
 	const quick_conditions =
 		Object.fromEntries(
-			Object.keys(syntax)
+			Object.values(syntax)
 				.map(syn => {
-					const syntax_conditions = conditions.filter(({ reading, not_reading }) =>
-						(!reading || (typeof reading === 'string' && reading === syn) || (Array.isArray(reading) && reading.includes(syn))) &&
-						(!not_reading || (typeof not_reading === 'string' && not_reading !== syn) || (Array.isArray(not_reading) && !not_reading.includes(syn)))
+					const syntax_conditions = normalised_conditions.filter(({ syntax: syntax_matches, not_syntax }) =>
+						(!syntax_matches || syntax_matches.includes(syn)) &&
+						(!not_syntax || !not_syntax.includes(syn))
 					)
 					return [
 						syn,
 						Object.fromEntries(
-							Object.keys(tokens)
+							Object.values(tokens)
 							.map(token => [
 								token,
 								array_sliceAfter(
-									syntax_conditions.filter(({ tokens: token_matches }) => (
-										!token_matches ||
-										string_is(token, ...((Array.isArray(token_matches) ? token_matches : [token_matches]).map(s => s.toUpperCase())))
+									syntax_conditions.filter(({ tokens: token_matches, not_tokens }) => (
+										(!token_matches || string_is(token, ...token_matches)) &&
+										(!not_tokens || !string_is(token, ...not_tokens))
 									)),
 									({ condition }) => !condition
 								)
-								// .map(({ condition, action }) => ({ condition: condition && condition.bind(instance), action: action.bind(instance) }))
 							])
 						)
 					]
 				}))
 
 	const getParserStep = (scope, instance, token_lookup, passthrough) => {
-		const matchingCondition = getConditionMatcher(scope, instance)
+		// Get a parser step for a particular parser instance
+
+		// Condition matcher (this used to be more complex but was made mostly redundant by quick_conditions)
+		const matchingCondition = ({ condition }) => !condition || condition.call(instance, scope)
+
 		const parserStepCall = () => {
-			const ct = syntax_inverted[scope.currentType || 'syntax_system_default']
-			const cc = token_lookup[scope.currentCharacter] || 'DEFAULT'
+			// This is called for each character in the string being parsed
+
+			// Get the syntax currently being read, fall back to default
+			const ct = scope.currentType || 'syntax_system_default'
+			// Classify the currently read character as a token, fall back to default
+			const cc = tokens[token_lookup[scope.currentCharacter]] || 'token_system_default'
+			// Find a condition matching the current syntax and token, as well as any other requirements
 			const foundCondition = quick_conditions[ct][cc].find(matchingCondition)
 
+			// Get the action function or fall back to the default action
 			const action = (foundCondition ? foundCondition.action : false) || defaultAction
+
+			// Execute the action
 			const result = action.call(instance, scope, passthrough)
+
+			// Always append to the reserve, for output in case of failure (not yet implemented)
 			scope.reserve += scope.currentCharacter
+
+			// Handle the result if one was returned
 			if (result) {
+				// Set buffer value
 				if (result.setBuffer !== undefined)
 					scope.buffer = result.setBuffer
+				// Append to buffer value
 				if (result.buffer !== undefined)
 					scope.buffer += result.buffer
 			}
+
+			// Return condition so that its index can be looked up for debug purposes
 			return foundCondition
 		}
 		return parserStepCall
 	}
 
 	const parse = (instance, writers, instance_tokens = {}) => {
+		// Create a parser instance with a particular config
+
+		// Normalise the given tokens by capitalising the keys
 		const normalised_instance_tokens = Object.fromEntries(
 			Object.entries(instance_tokens).map(([ tok, vals ]) => [ tok.toUpperCase(), vals ])
 		)
+		// Check all the given tokens for validity
 		Object.keys(tokens).forEach(tok => {
-			if (tok === 'DEFAULT') return
-			if (!normalised_instance_tokens[tok] || !Array.isArray(normalised_instance_tokens[tok]))
+			if (system_tokens.includes(tok)) return
+			const token_list = normalised_instance_tokens[tok]
+			if (!token_list || !Array.isArray(token_list) || token_list.length === 0)
 				throw new Error(`Tokens must include "${tok}" as a list of string characters.`)
+			token_list.forEach(t => {
+				if (typeof t !== 'string')
+					throw new Error(`Token must be a string, ${typeof t} given.`)
+				if (t.length !== 1)
+					throw new Error(`Token must be a single character, "${t}" is ${t.length} characters.`)
+			})
 		})
+		// Create a lookup table for easy access
 		const token_lookup = invertAliasIndex(normalised_instance_tokens)
 
-		// Check the writers implement the required methods
 		const validate_writer = (name, writer) => {
+			// Validate a writer object against the given writer interface
 			if (typeof writer.inst !== 'function')
 				throw new Error(`The ${name} writer must implement an 'inst' method that creates a new object to write data to.`)
 			if (typeof writer.dump !== 'function')
@@ -690,33 +793,37 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 						throw new Error(`The ${name} writer must implement a '${method}' method${reason?(' '+reason):''}.`)
 				})
 		}
+
+		// Check the existing writers implement the required methods
 		Object.entries(writers)
 			.forEach(([ name, writer ]) => {
 				validate_writer(name, writer)
 			})
 
-		return (str = '', args = {}, options = {}) => {
+		const parse_instance = (str = '', args = {}, options = {}) => {
 			const {
 				debug: debug_call = false,
 				writer = writers.default,
 				outputString = false
 			} = options
 
+			// Check the custom writer implements the required interface
+			validate_writer('custom', writer)
+
 			// Init scope
-			const scope = new Scope(str, args)
+			const scope = new Scope(str, args, writer)
 
-			validate_writer('default', writer)
-			scope.writer = writer
-
-			// Set up debug stuff
-			const debug_stack = []
+			// The debug function that reports data on each step
 			const debug = (index, chosenCondition) =>
 				debug_call(index, JSON.parse(JSON.stringify(scope.data)), chosenCondition)
+			// The debug call that will be passed through to writer.nest calls, takes index first to re-base the debug pointer
 			const subDebugCall = debug_call
 				? (index) => (ind, dat, ch) => debug_call(index+ind+1, dat, ch)
 				: () => false
 
+			// All options passed through to the writer.nest calls
 			const passthrough = { ...options, debug: subDebugCall }
+			// The instance that will be passed through to all actions, and can be refered to as `this` inside the actions
 			const pass_instance = {
 				isToken(str, ...toks) {
 					const str_token = token_lookup[str]
@@ -732,9 +839,9 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 			const parserStep = getParserStep(scope, pass_instance, token_lookup, passthrough)
 
 			// Zero-th debug step, before any action
-			if (debug_call && quick_conditions.START.DEFAULT.length === 0)
+			if (debug_call && quick_conditions.syntax_system_start.token_system_default.length === 0)
 				debug(0, -2)
-			quick_conditions.START.DEFAULT
+			quick_conditions.syntax_system_start.token_system_default
 				.forEach(condition => {
 					if (debug_call)
 						debug(0, conditions.indexOf(condition))
@@ -752,9 +859,9 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 			}
 
 			// Final debug step, after all actions
-			if (debug_call && quick_conditions.END.DEFAULT.length === 0)
+			if (debug_call && quick_conditions.syntax_system_end.token_system_default.length === 0)
 				debug(str.length+1, -3)
-			quick_conditions.END.DEFAULT
+			quick_conditions.syntax_system_end.token_system_default
 				.forEach(condition => {
 					if (debug_call)
 						debug(str.length+1, conditions.indexOf(condition))
@@ -767,13 +874,109 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 				return scope.writer.dumpString()
 			return scope.writer.dump()
 		}
+
+		return parse_instance
 	}
 
 	return parse
 }
 
+// Language-specific parser for HTMA
 const htma_parser = (() => {
 
+	// System tags for programatic tags
+	const tags = {
+		IF: 'if',
+		VAR: 'var',
+		FUNC: 'func',
+		ARGS: 'args',
+		ELSE: 'else',
+		ELSEIF: 'elseif',
+		FOR: 'for'
+	}
+
+	// System tags grouped by ability
+	const tag_groups = {
+		system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS,tags.FUNC],
+		condition: [tags.IF,tags.ELSE,tags.ELSEIF],
+		else: [tags.ELSE,tags.ELSEIF],
+		if: [tags.IF,tags.ELSEIF],
+		var: [tags.VAR,tags.FUNC],
+	}
+
+	// List of HTML tags that are allowed to be self-closing
+	const self_closing_tags = {
+		area: true,
+		base: true,
+		br: true,
+		col: true,
+		command: true,
+		embed: true,
+		hr: true,
+		img: true,
+		input: true,
+		keygen: true,
+		link: true,
+		menuitem: true,
+		meta: true,
+		param: true,
+		source: true,
+		track: true,
+		wbr: true
+	}
+
+	const attribute_transformer = (attributeTransformations, prop) => {
+		// Get attribute transformation config for a given attribute name, fill in from & fall back to default
+		const attr_tr = attributeTransformations[prop]
+		if (attr_tr)
+			return { ...attributeTransformations.DEFAULT, ...attr_tr }
+		return attributeTransformations.DEFAULT
+	}
+
+	const transform_attributes = (attributeTransformations, attrs, orig={}) =>
+		// Group attribute transformation
+		Object
+			.entries(attrs)
+			.reduce(transform_attribute(attributeTransformations), orig)
+
+	const transform_attribute = attributeTransformations => (acc, [ prop, val ]) => {
+		// Transform a single attribute based on the attribute transformation config
+
+		// Get the attribute transformation config
+		const attr_tr = attribute_transformer(attributeTransformations, prop)
+
+		// Check the attribute value is valid first
+		if (attr_tr.validate && !attr_tr.validate(val))
+			return acc
+
+		// Transform the attribute to others if the value is found in the transformations
+		if (attr_tr.trans) {
+			const transed = attr_tr.trans[val]
+
+			// Recursively transform the resulting attributes to ensure they are all resolved
+			if (transed)
+				return transform_attributes(attributeTransformations, transed, acc)
+
+			// Do nothing if the value is not transformable
+			return acc
+		}
+		// If the atrribute has no transformations, just add it to the attribute object normally
+		return add_attribute(attributeTransformations, acc, prop, val)
+	}
+
+	const add_attribute = (attributeTransformations, attrs, attr, attrVal) => {
+		// Add an attribute to the attribute object using the methods in the attribute transformation config
+		const attr_tr = attribute_transformer(attributeTransformations, attr)
+		return {
+			...attrs,
+			[attr]: attr_tr.add(
+				attrs[attr],
+				attr_tr.parse(attrVal)
+			)
+		}
+	}
+
+	// Named actions that are taken by the parser, used only in the conditions list
 	const actions = {
 		inline_expression(tag) {
 			return tag.attrs.id+((tag.attrs.class && tag.attrs.class.length) ? ('.'+tag.attrs.class.join('.')) : '')
@@ -945,7 +1148,7 @@ const htma_parser = (() => {
 									: false)
 						const result = exp ? scope.exec(exp) : scope.props
 						if (typeof result === 'object') {
-							const par_tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
+							const par_tag = actions.parent_tag.call(this, scope)
 							par_tag.attrs = {
 								...par_tag.attrs,
 								...result
@@ -1016,103 +1219,161 @@ const htma_parser = (() => {
 			scope.buffer = string_repeat(' ', loop.indent)
 			scope.stop_reading(this.syntax.LOOP)
 			scope.start_reading(this.syntax.INDENT)
-		}
+		},
+
+
+		clear_buffer (scope) {
+			return { setBuffer: '' }
+		},
+		read_character(scope) {
+			return { buffer: scope.currentCharacter }
+		},
+		read_content(scope) {
+			if (scope.currentCondition !== false)
+				scope.writer.content(scope.buffer)
+		},
+		parent_tag(scope) {
+			return scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
+		},
+
+
+		mark_tag_self_closing(scope) {
+			const tag = scope.get_reading_data(this.syntax.TAG)
+			tag.selfClosing = true
+		},
+
+		close_tag_after_tag_content(scope, passthrough) {
+			const tag = actions.parent_tag.call(this, scope)
+			scope.stop_reading(this.syntax.TAGCONTENT, true)
+			return actions.open_tag.call(this, scope, tag, passthrough)
+		},
+		close_tag_after_id(scope, passthrough) {
+			const tag = actions.stop_reading_id.call(this, scope)
+			return actions.open_tag.call(this, scope, tag, passthrough)
+		},
+		close_tag_after_class(scope, passthrough) {
+			const tag = actions.stop_reading_class.call(this, scope)
+			return actions.open_tag.call(this, scope, tag, passthrough)
+		},
+
+		start_reading_string(scope){
+			scope.start_reading(this.syntax.STRING, { open: scope.currentCharacter })
+		},
+		stop_reading_string(scope){
+			scope.stop_reading(this.syntax.STRING, true)
+		},
+
+		start_reading_escape(scope){
+			scope.start_reading(this.syntax.ESCAPE)
+		},
+		stop_reading_escape(scope){
+			scope.stop_reading(this.syntax.ESCAPE)
+			return { buffer: '\\'+scope.currentCharacter }
+		},
+
+		stop_reading_class(scope) {
+			const tag = scope.get_reading_data(this.syntax.TAG)
+			tag.attrs = add_attribute(this.attributeTransformations, tag.attrs, 'class', scope.buffer)
+			scope.stop_reading(this.syntax.CLASS)
+			return tag
+		},
+		stop_reading_id(scope) {
+			const tag = scope.get_reading_data(this.syntax.TAG)
+			tag.attrs = add_attribute(this.attributeTransformations, tag.attrs, 'id', scope.buffer)
+			scope.stop_reading(this.syntax.ID)
+			return tag
+		},
+
+		start_reading_tag(scope) {
+			const child_tag = {attrs:{}}
+			scope.start_reading(this.syntax.TAG, child_tag)
+			scope.start_reading(this.syntax.TAGNAME)
+			return child_tag
+		},
+		start_reading_tag_after_content(scope) {
+			actions.read_content.call(this, scope)
+			actions.start_reading_tag.call(this, scope)
+		},
+		start_reading_tag_after_indent(scope) {
+			const indent = scope.buffer.length
+			scope.stop_reading(this.syntax.INDENT)
+			actions.close_tags.call(this, scope, indent)
+			const child_tag = actions.start_reading_tag.call(this, scope)
+			child_tag.indent = indent
+		},
+		start_reading_tag_inside_attribute_value(scope) {
+			scope.get_reading_data(this.syntax.ATTRVAL).value = scope.buffer
+			actions.start_reading_tag.call(this, scope)
+		},
+		start_reading_tag_content_after_class(scope, passthrough) {
+			actions.stop_reading_class.call(this, scope)
+			scope.start_reading(this.syntax.TAGCONTENT)
+		},
+		start_reading_tag_content_after_id(scope, passthrough) {
+			actions.stop_reading_id.call(this, scope)
+			scope.start_reading(this.syntax.TAGCONTENT)
+		},
+		start_reading_tag_attributes(scope) {
+			const attr_data = {}
+			if (scope.is_reading(this.syntax.INDENT)) {
+				attr_data.indent = scope.buffer.length
+				scope.stop_reading(this.syntax.INDENT)
+			}
+			scope.start_reading(this.syntax.ATTR, attr_data)
+			scope.start_reading(this.syntax.ATTRNAME)
+			return { setBuffer: scope.currentCharacter }
+		},
+
+		start_reading_class_after_class(scope, passthrough) {
+			actions.stop_reading_class.call(this, scope)
+			scope.start_reading(this.syntax.CLASS)
+		},
+		start_reading_class_after_id(scope, passthrough) {
+			actions.stop_reading_id.call(this, scope)
+			scope.start_reading(this.syntax.CLASS)
+		},
+
+		start_reading_indent_after_class(scope) {
+			actions.start_reading_tag_content_after_class.call(this, scope)
+			scope.start_reading(this.syntax.INDENT)
+		},
+		start_reading_indent_after_id(scope, passthrough) {
+			actions.start_reading_tag_content_after_id.call(this, scope)
+			scope.start_reading(this.syntax.INDENT)
+		},
+		start_reading_indent_after_newline(scope) {
+			actions.read_content.call(this, scope)
+			scope.start_reading(this.syntax.INDENT)
+			return { setBuffer: '' }
+		},
+		start_reading_indent_after_content(scope) {
+			actions.read_content.call(this, scope)
+			scope.stop_reading(this.syntax.CONTENT)
+			scope.start_reading(this.syntax.INDENT)
+			return { setBuffer: '' }
+		},
+		start_reading_content_after_indent(scope) {
+			scope.stop_reading(this.syntax.INDENT)
+			scope.start_reading(this.syntax.CONTENT, { indent: scope.buffer.length })
+			return { setBuffer: scope.currentCharacter }
+		},
 	}
 
-	const tags = {
-		IF: 'if',
-		VAR: 'var',
-		FUNC: 'func',
-		ARGS: 'args',
-		ELSE: 'else',
-		ELSEIF: 'elseif',
-		FOR: 'for'
-	}
-
-	const tag_groups = {
-		system: [tags.VAR,tags.FOR,tags.IF,tags.ELSE,tags.ELSEIF,tags.ARGS,tags.FUNC],
-		condition: [tags.IF,tags.ELSE,tags.ELSEIF],
-		else: [tags.ELSE,tags.ELSEIF],
-		if: [tags.IF,tags.ELSEIF],
-		var: [tags.VAR,tags.FUNC],
-	}
-
-	const self_closing_tags = {
-		area: true,
-		base: true,
-		br: true,
-		col: true,
-		command: true,
-		embed: true,
-		hr: true,
-		img: true,
-		input: true,
-		keygen: true,
-		link: true,
-		menuitem: true,
-		meta: true,
-		param: true,
-		source: true,
-		track: true,
-		wbr: true
-	}
-
-	const attribute_transformer = (attributeTransformations, prop) => {
-		const attr_tr = attributeTransformations[prop]
-		if (attr_tr)
-			return { ...attributeTransformations.DEFAULT, ...attr_tr }
-		return attributeTransformations.DEFAULT
-	}
-
-	const transform_attributes = (attributeTransformations, attrs, orig={}) =>
-		Object
-			.entries(attrs)
-			.reduce(transform_attribute(attributeTransformations), orig)
-
-	const transform_attribute = attributeTransformations => (acc, [ prop, val ]) => {
-		const attr_tr = attribute_transformer(attributeTransformations, prop)
-
-		if (attr_tr.validate && !attr_tr.validate(val))
-			return acc
-
-		if (attr_tr.trans) {
-			const transed = attr_tr.trans[val]
-
-			if (transed)
-				return transform_attributes(attributeTransformations, transed, acc)
-
-			return acc
-		}
-		return add_attribute(attributeTransformations, acc, prop, val)
-	}
-
-	const add_attribute = (attributeTransformations, attrs, attr, attrVal) => {
-		const attr_tr = attribute_transformer(attributeTransformations, attr)
-		return {
-			...attrs,
-			[attr]: attr_tr.add(
-				attrs[attr],
-				attr_tr.parse(attrVal)
-			)
-		}
-	}
-
-
+	// Return the parser for this language
 	return parser(
 		[
 			{
-				reading: "START",
+				syntax: syntax => syntax.START,
 				action(scope) {
 					scope.start_reading(this.syntax.INDENT)
 				}
 			},
 			{
-				reading: "END",
+				syntax: syntax => syntax.END,
 				action(scope) {
 					// Write any remaining content
 					if (scope.is_reading(this.syntax.CONTENT)) {
-						if (scope.currentCondition !== false)
-							scope.writer.content(scope.buffer)
+						actions.read_content.call(this, scope)
 						scope.stop_reading(this.syntax.CONTENT)
 					}
 					// Close all remaining tags
@@ -1120,17 +1381,22 @@ const htma_parser = (() => {
 				}
 			},
 			{
-				reading: "LOOP",
+				syntax: syntax => syntax.LOOP,
 				action(scope, { debug, ...passthrough }) {
 					const tag = scope.get_reading_data(this.syntax.TAG)
 					const loop = scope.reading_data
-					if (this.isToken(scope.currentCharacter, "newline")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.NEWLINE)) {
 						loop.indent = 0
 					} else
-					if (this.isToken(scope.currentCharacter, "indent")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.INDENT)) {
 						loop.indent += 1
 					}
-					if (!scope.followingCharacter || (!this.isToken(scope.followingCharacter, "indent", "newline") && loop.indent <= tag.indent)) {
+					if (!scope.followingCharacter ||
+						(
+							!this.isToken(scope.followingCharacter, this.tokens.INDENT, this.tokens.NEWLINE) &&
+							loop.indent <= tag.indent
+						)
+					) {
 						actions.render_loop.call(this, scope, loop, { ...passthrough, debug: debug(loop.index) })
 					} else {
 						return { buffer: scope.currentCharacter }
@@ -1138,73 +1404,74 @@ const htma_parser = (() => {
 				}
 			},
 			{
-				reading: "TAGNAME",
-				tokens: ["indent", "newline", "idmarker", "classseparator", "closetag"],
+				syntax: syntax => syntax.TAGNAME,
+				tokens: tokens => [tokens.INDENT, tokens.NEWLINE, tokens.IDMARKER, tokens.CLASSSEPARATOR, tokens.CLOSETAG],
 				action(scope, passthrough) {
 					const tag = scope.get_reading_data(this.syntax.TAG)
 					const tagName = scope.buffer
-					const canonName = this.tagAliases[tagName] || tagName
-					const finalName = custom_components[canonName] ? canonName : canonName.toLowerCase()
+					const lowerTagName = tagName.toLowerCase()
+					const finalName = custom_components[tagName] ? tagName : (this.tagAliases[lowerTagName] || lowerTagName)
 					tag.name = finalName
 					scope.stop_reading(this.syntax.TAGNAME)
 					if (!string_is(tag.name, tag_groups.else) && scope.condition(tag.indent, true) !== undefined) {
 						scope.setCondition(tag.indent, undefined)
 					}
 
-					if (this.isToken(scope.currentCharacter, "closetag")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.CLOSETAG)) {
 						return actions.open_tag.call(this, scope, tag, passthrough)
 					} else
-					if (this.isToken(scope.currentCharacter, "idmarker")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.IDMARKER)) {
 						scope.start_reading(this.syntax.ID)
 					} else
-					if (this.isToken(scope.currentCharacter, "classseparator")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.CLASSSEPARATOR)) {
 						scope.start_reading(this.syntax.CLASS)
 					} else
-					if (this.isToken(scope.currentCharacter, "indent", "newline")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.INDENT, this.tokens.NEWLINE)) {
 						scope.start_reading(this.syntax.TAGCONTENT)
-						if (this.isToken(scope.currentCharacter, "newline")) {
+						if (this.isToken(scope.currentCharacter, this.tokens.NEWLINE)) {
 							scope.start_reading(this.syntax.INDENT)
 						}
 					}
 				}
 			},
 			{
+				syntax: syntax => syntax.ATTRNAME,
 				condition(scope) {
-					return scope.is_reading(this.syntax.TAGCONTENT, true) && scope.is_reading(this.syntax.ATTRNAME)
+					return scope.is_reading(this.syntax.TAGCONTENT, true)
 				},
-				tokens: ["indent", "newline", "closetag", "attrassign"],
+				tokens: tokens => [tokens.INDENT, tokens.NEWLINE, tokens.CLOSETAG, tokens.ATTRASSIGN],
 				action(scope, passthrough) {
 
-					const tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
+					const tag = actions.parent_tag.call(this, scope)
 
 					const attributeAliases = this.tagAttributeAliases[tag.name] || {}
 					const attrName = scope.buffer.toLowerCase()
 					tag.current_attr = attributeAliases[attrName] || this.commonAttributeAliases[attrName] || attrName
 					scope.stop_reading(this.syntax.ATTRNAME)
 
-					if (this.isToken(scope.currentCharacter, "closetag")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.CLOSETAG)) {
 						scope.stop_reading(this.syntax.ATTR)
 						scope.stop_reading(this.syntax.TAGCONTENT, true)
 						if (scope.currentCondition)
 							tag.attrs[tag.current_attr] = true
 						return actions.open_tag.call(this, scope, tag, passthrough)
 					} else
-					if (this.isToken(scope.currentCharacter, "attrassign")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.ATTRASSIGN)) {
 						scope.start_reading(this.syntax.ATTRVAL, {value:''})
 					} else
-					if (this.isToken(scope.currentCharacter, "indent", "newline")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.INDENT, this.tokens.NEWLINE)) {
 						if (scope.currentCondition)
 							tag.attrs[tag.current_attr] = true
 						scope.stop_reading(this.syntax.ATTR)
-						if (this.isToken(scope.currentCharacter, "newline")) {
+						if (this.isToken(scope.currentCharacter, this.tokens.NEWLINE)) {
 							scope.start_reading(this.syntax.INDENT)
 						}
 					}
 				}
 			},
 			{
-				reading: "ATTRVAL",
-				tokens: ["indent", "newline", "closetag"],
+				syntax: syntax => syntax.ATTRVAL,
+				tokens: tokens => [tokens.INDENT, tokens.NEWLINE, tokens.CLOSETAG],
 				action(scope, passthrough) {
 					const attributeCondition = scope.currentCondition
 					const prevVal = scope.get_reading_data(this.syntax.ATTRVAL).value
@@ -1213,193 +1480,170 @@ const htma_parser = (() => {
 
 					scope.stop_reading(this.syntax.ATTRVAL)
 					scope.stop_reading(this.syntax.ATTR)
-					const tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
+					const tag = actions.parent_tag.call(this, scope)
 
 					if (attributeCondition)
 						tag.attrs = add_attribute(this.attributeTransformations, tag.attrs, tag.current_attr, attrVal)
 
-					if (this.isToken(scope.currentCharacter, "closetag")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.CLOSETAG)) {
 						scope.stop_reading(this.syntax.TAGCONTENT)
 						return actions.open_tag.call(this, scope, tag, passthrough)
 					} else
-					if (this.isToken(scope.currentCharacter, "newline")) {
+					if (this.isToken(scope.currentCharacter, this.tokens.NEWLINE)) {
 						scope.start_reading(this.syntax.INDENT)
 					}
 					return { setBuffer: '' }
 				}
 			},
-			{
-				condition(scope) {
-					return scope.is_reading(this.syntax.ID) || scope.is_reading(this.syntax.CLASS)
-				},
-				tokens: ["indent", "newline", "classseparator", "closetag"],
-				action (scope, passthrough) {
-					const tag = scope.get_reading_data(this.syntax.TAG)
-					if (scope.is_reading(this.syntax.ID)) {
-						tag.attrs.id = scope.buffer
-						scope.stop_reading(this.syntax.ID)
-					} else
-					if (scope.is_reading(this.syntax.CLASS)) {
-						tag.attrs = add_attribute(this.attributeTransformations, tag.attrs, 'class', scope.buffer)
-						scope.stop_reading(this.syntax.CLASS)
-					}
 
-					if (this.isToken(scope.currentCharacter, "closetag")) {
-						return actions.open_tag.call(this, scope, tag, passthrough)
-					} else
-					if (this.isToken(scope.currentCharacter, "classseparator")) {
-						scope.start_reading(this.syntax.CLASS)
-					} else
-					if (this.isToken(scope.currentCharacter, "indent", "newline")) {
-						scope.start_reading(this.syntax.TAGCONTENT)
-						if (this.isToken(scope.currentCharacter, "newline")) {
-							scope.start_reading(this.syntax.INDENT)
-						}
-					}
-				},
+
+
+
+
+			{
+				syntax: syntax => syntax.ID,
+				tokens: tokens => tokens.INDENT,
+				action: actions.start_reading_tag_content_after_id,
 			},
 			{
+				syntax: syntax => syntax.ID,
+				tokens: tokens => tokens.NEWLINE,
+				action: actions.start_reading_indent_after_id,
+			},
+			{
+				syntax: syntax => syntax.ID,
+				tokens: tokens => tokens.CLASSSEPARATOR,
+				action: actions.start_reading_class_after_id,
+			},
+			{
+				syntax: syntax => syntax.ID,
+				tokens: tokens => tokens.CLOSETAG,
+				action: actions.close_tag_after_id,
+			},
+			{
+				syntax: syntax => syntax.CLASS,
+				tokens: tokens => tokens.INDENT,
+				action: actions.start_reading_tag_content_after_class,
+			},
+			{
+				syntax: syntax => syntax.CLASS,
+				tokens: tokens => tokens.NEWLINE,
+				action: actions.start_reading_indent_after_class,
+			},
+			{
+				syntax: syntax => syntax.CLASS,
+				tokens: tokens => tokens.CLASSSEPARATOR,
+				action: actions.start_reading_class_after_class,
+			},
+			{
+				syntax: syntax => syntax.CLASS,
+				tokens: tokens => tokens.CLOSETAG,
+				action: actions.close_tag_after_class,
+			},
+			{
+				syntax: syntax => syntax.ESCAPE,
 				condition(scope) {
-					return scope.is_reading(this.syntax.STRING, true) && scope.is_reading(this.syntax.ESCAPE)
+					return scope.is_reading(this.syntax.STRING, true)
 				},
-				action(scope){
-					scope.stop_reading(this.syntax.ESCAPE)
-					return { buffer: '\\'+scope.currentCharacter }
-				}
+				action: actions.stop_reading_escape
 			},
 			{
-				condition(scope, s) {
-					return scope.is_reading(this.syntax.STRING) && !scope.is_reading(this.syntax.ESCAPE) && this.isToken(s, "escape")
-				},
-				action(scope){
-					scope.start_reading(this.syntax.ESCAPE)
-				}
+				syntax: syntax => syntax.STRING,
+				// not_syntax: syntax => syntax.ESCAPE,
+				tokens: tokens => tokens.ESCAPE,
+				action: actions.start_reading_escape
 			},
 			{
-				condition(scope, s) {
+				not_syntax: syntax => syntax.ESCAPE,
+				condition(scope) {
 					return array_sliceAt(scope.reading,
 								({ type }) => type === this.syntax.STRING)
 							.every	(({ type }) => type !== this.syntax.ATTRVAL) &&
 
 					// scope.is_reading(this.syntax.STRING, true) &&
-						!scope.is_reading(this.syntax.ESCAPE) &&
-						s === scope.get_reading_data(this.syntax.STRING).open
+						scope.currentCharacter === scope.get_reading_data(this.syntax.STRING).open
 				},
-				action(scope){
-					scope.stop_reading(this.syntax.STRING, true)
-				}
+				action: actions.stop_reading_string
 			},
 			{
-				tokens: ["opentag"],
-				action(scope) {
-					const child_tag = {attrs:{}}
-					if (scope.is_reading(this.syntax.ATTRVAL, true)) {
-						scope.get_reading_data(this.syntax.ATTRVAL).value = scope.buffer
-					} else
-					if (scope.is_reading(this.syntax.INDENT)) {
-						child_tag.indent = scope.buffer.length
-						scope.stop_reading(this.syntax.INDENT)
-						actions.close_tags.call(this, scope, child_tag.indent)
-					} else
-					if (scope.is_reading(this.syntax.TAGCONTENT)) {
-					} else
-					if (scope.is_reading(this.syntax.CONTENT)) {
-						if (scope.currentCondition !== false)
-							scope.writer.content(scope.buffer)
-					}
-					scope.start_reading(this.syntax.TAG, child_tag)
-					scope.start_reading(this.syntax.TAGNAME)
-				}
-			},
-			{
-				reading: "STRING",
-				action(scope) {
-					return {buffer:scope.currentCharacter}
-				}
-			},
-			{
-				tokens: ["selfclose"],
 				condition(scope) {
-					return !scope.is_reading(this.syntax.STRING) && scope.is_reading(this.syntax.TAG, true) && this.isToken(scope.followingCharacter, "closetag")
+					return scope.is_reading(this.syntax.ATTRVAL, true)
 				},
-				action(scope) {
-					const tag = scope.get_reading_data(this.syntax.TAG)
-					tag.selfClosing = true
-				}
+				tokens: tokens => tokens.OPENTAG,
+				action: actions.start_reading_tag_inside_attribute_value
 			},
 			{
-				reading: "ATTRVAL",
-				tokens: ["quote"],
-				condition (scope) {
+				syntax: syntax => syntax.INDENT,
+				tokens: tokens => tokens.OPENTAG,
+				action: actions.start_reading_tag_after_indent
+			},
+			{
+				syntax: syntax => syntax.CONTENT,
+				tokens: tokens => tokens.OPENTAG,
+				action: actions.start_reading_tag_after_content
+			},
+			{
+				// syntax: syntax => syntax.TAGCONTENT,
+				tokens: tokens => tokens.OPENTAG,
+				action: actions.start_reading_tag
+			},
+			{
+				syntax: syntax => syntax.STRING,
+				action: actions.read_character
+			},
+			{
+				not_syntax: syntax => syntax.STRING,
+				tokens: tokens => tokens.SELFCLOSE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.TAG, true) && this.isToken(scope.followingCharacter, this.tokens.CLOSETAG)
+				},
+				action: actions.mark_tag_self_closing
+			},
+			{
+				syntax: syntax => syntax.ATTRVAL,
+				tokens: tokens => tokens.QUOTE,
+				condition(scope) {
 					const existing_buffer = scope.buffer
 					scope.buffer = existing_buffer
 					return !existing_buffer
 				},
-				action(scope){
-					scope.start_reading(this.syntax.STRING, { open: scope.currentCharacter })
-				}
+				action: actions.start_reading_string
 			},
 			{
 				condition(scope) {
 					return scope.is_reading(this.syntax.TAGCONTENT, true)
 				},
-				tokens: ["closetag"],
-				action(scope, passthrough) {
-					const tag = scope.reading[scope.reading.findIndex(({ type }) => type === this.syntax.TAGCONTENT)+1].data
-
-					scope.stop_reading(this.syntax.TAGCONTENT, true)
-
-					return actions.open_tag.call(this, scope, tag, passthrough)
-				}
+				tokens: tokens => tokens.CLOSETAG,
+				action: actions.close_tag_after_tag_content
 			},
 			{
-				tokens: ["newline"],
-				action (scope) {
-					if (scope.is_reading(this.syntax.CONTENT)) {
-						if (scope.currentCondition !== false)
-							scope.writer.content(scope.buffer)
-						scope.stop_reading(this.syntax.CONTENT)
-						scope.start_reading(this.syntax.INDENT)
-					} else
-					if (scope.is_reading(this.syntax.INDENT)) {
-					} else
-					{
-						if (scope.currentCondition !== false)
-							scope.writer.content(scope.buffer)
-						scope.start_reading(this.syntax.INDENT)
-					}
-					return { setBuffer: '' }
-				}
+				syntax: syntax => syntax.CONTENT,
+				tokens: tokens => tokens.NEWLINE,
+				action: actions.start_reading_indent_after_content
 			},
 			{
-				condition(scope, s) {
+				syntax: syntax => syntax.INDENT,
+				tokens: tokens => tokens.NEWLINE,
+				action: actions.clear_buffer
+			},
+			{
+				tokens: tokens => tokens.NEWLINE,
+				action: actions.start_reading_indent_after_newline
+			},
+			{
+				not_tokens: tokens => [tokens.INDENT, tokens.NEWLINE],
+				condition(scope) {
 					return scope.is_reading(this.syntax.TAGCONTENT, true)
 							&& array_sliceAt(scope.reading,
 										({ type }) => type === this.syntax.TAGCONTENT)
-									.every	(({ type }) => !string_is(type, [this.syntax.ATTR, this.syntax.TAGNAME, this.syntax.ID, this.syntax.CLASS, 'tagvalue']))
-							&& !this.isToken(s, "indent", "newline")
+									.every	(({ type }) => !string_is(type, [this.syntax.ATTR, this.syntax.TAGNAME, this.syntax.ID, this.syntax.CLASS]))
 				},
-				action(scope) {
-					const attr_data = {}
-					if (scope.is_reading(this.syntax.INDENT)) {
-						attr_data.indent = scope.buffer.length
-						scope.stop_reading(this.syntax.INDENT)
-					}
-					scope.start_reading(this.syntax.ATTR, attr_data)
-					scope.start_reading(this.syntax.ATTRNAME)
-					return { setBuffer: scope.currentCharacter }
-				}
+				action: actions.start_reading_tag_attributes
 			},
 			{
-				reading: "INDENT",
-				condition(scope, s) {
-					return !this.isToken(s, "indent")
-				},
-				action(scope) {
-					scope.stop_reading(this.syntax.INDENT)
-					scope.start_reading(this.syntax.CONTENT, { indent: scope.buffer.length })
-					return { setBuffer: scope.currentCharacter }
-				}
+				syntax: syntax => syntax.INDENT,
+				not_tokens: tokens => tokens.INDENT,
+				action: actions.start_reading_content_after_indent
 			}
 		],
 		["CONTENT", "INDENT", "TAG", "TAGNAME", "CLASS", "ID", "TAGCONTENT", "ATTR", "ATTRNAME", "ATTRVAL", "STRING", "ESCAPE", "LOOP"],
@@ -1413,11 +1657,19 @@ const htma_parser = (() => {
 	)
 })()
 
+// Language-specific parser for CSS
 const css_parser = (() => {
 
+	// Named actions that are taken by the parser, used only in the conditions list
 	// TODO: enforce no unit on b for a/b
 	// TODO: enforce no unit on a or b for a*b
 	const actions = {
+		do_nothing(scope) {
+			return {buffer:''}
+		},
+		read_character(scope) {
+			return {buffer:scope.currentCharacter}
+		},
 		value(scope, value, calced = false) {
 			let out = ''
 
@@ -1445,7 +1697,8 @@ const css_parser = (() => {
 
 			return out
 		},
-		done(scope, prop) {
+		stop_reading_prop(scope, prop) {
+			scope.stop_reading(this.syntax.PROP, true)
 			if (prop.value) {
 				scope.writer.prop(prop.name, actions.value(scope, prop.value))
 			} else
@@ -1455,268 +1708,261 @@ const css_parser = (() => {
 						scope.writer.prop(...pv)
 					});
 			}
+		},
+		set_value_unit(scope) {
+			const val = scope.get_reading_data(this.syntax.VALUE)
+			val.unit = scope.buffer
+			return val
+		},
+		set_value_value(scope) {
+			const val = scope.get_reading_data(this.syntax.VALUE)
+			val.value = scope.buffer
+			return val
+		},
+
+
+		start_reading_prop_name(scope) {
+			scope.start_reading(this.syntax.PROP, {})
+			scope.start_reading(this.syntax.PROPNAME)
+			return {buffer:scope.currentCharacter}
+		},
+		start_reading_value(scope) {
+			scope.start_reading(this.syntax.VALUE, {value:'',unit:false})
+			return {buffer:scope.currentCharacter}
+		},
+		start_reading_unit_after_value(scope) {
+			const val = scope.get_reading_data(this.syntax.VALUE)
+			val.value = scope.buffer
+			scope.start_reading(this.syntax.UNIT)
+			return {buffer:scope.currentCharacter}
+		},
+		start_reading_bracket(scope) {
+			const prop = scope.get_reading_data(this.syntax.PROP)
+			actions.read_string_value.call(this, scope, prop)
+			scope.start_reading(this.syntax.BRACE, {value:[]})
+		},
+
+		read_string_value(scope, prop) {
+			const read = scope.buffer
+			if (read)
+				prop.value.push(read)
+		},
+		read_prop_value_after_prop_name(scope) {
+			const prop = scope.get_reading_data(this.syntax.PROP)
+			prop.name = scope.buffer
+			prop.value = []
+			scope.stop_reading(this.syntax.PROPNAME)
+			scope.start_reading(this.syntax.PROPVAL)
+		},
+
+		read_operator_after_unit(scope) {
+			const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+			prop.value.push(actions.set_value_unit.call(this, scope))
+			actions.read_operator.call(this, scope)
+			scope.stop_reading(this.syntax.UNIT)
+			scope.stop_reading(this.syntax.VALUE)
+		},
+		read_operator(scope) {
+			const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+			prop.value.push({operator:scope.currentCharacter})
+		},
+		read_operator_after_value(scope) {
+			const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+			prop.value.push(actions.set_value_value.call(this, scope))
+			actions.read_operator.call(this, scope)
+			scope.stop_reading(this.syntax.VALUE)
+		},
+
+		stop_reading_value(scope) {
+			const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+			const val = scope.get_reading_data(this.syntax.VALUE)
+			val.value = scope.buffer
+			prop.value.push(val)
+			scope.stop_reading(this.syntax.VALUE)
+		},
+		stop_reading_bracket(scope) {
+			scope.stop_reading(this.syntax.BRACE, true)
+		},
+		stop_reading_bracket_value(scope, val) {
+			const prop = scope.get_reading_data(this.syntax.BRACE)
+			prop.value.push(val)
+
+			actions.stop_reading_bracket.call(this, scope)
+			const par_prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
+			par_prop.value.push(prop.value)
+		},
+		stop_reading_bracket_after_unit(scope) {
+			return actions.stop_reading_bracket_value
+				.call(this, scope, actions.set_value_unit.call(this, scope))
+		},
+		stop_reading_bracket_after_value(scope) {
+			return actions.stop_reading_bracket_value
+				.call(this, scope, actions.set_value_value.call(this, scope))
+		},
+
+		terminate_reading_unit(scope) {
+			const prop = scope.get_reading_data(this.syntax.PROP)
+			prop.value.push(actions.set_value_unit.call(this, scope))
+
+			return actions.stop_reading_prop.call(this, scope, prop)
+		},
+		terminate_reading_value(scope) {
+			const prop = scope.get_reading_data(this.syntax.PROP)
+			prop.value.push(actions.set_value_value.call(this, scope))
+
+			return actions.stop_reading_prop.call(this, scope, prop)
+		},
+		terminate_reading_prop_value(scope) {
+			const prop = scope.get_reading_data(this.syntax.PROP)
+			actions.read_string_value.call(this, scope, prop)
+
+			return actions.stop_reading_prop.call(this, scope, prop)
+		},
+		terminate_reading_prop_name(scope) {
+			const prop = scope.get_reading_data(this.syntax.PROP)
+			prop.name = scope.buffer
+
+			return actions.stop_reading_prop.call(this, scope, prop)
+		},
+		terminate(scope) {
+			if (scope.is_reading(this.syntax.PROPNAME))
+				return actions.terminate_reading_prop_name.call(this, scope)
+			if (scope.is_reading(this.syntax.PROPVAL))
+				return actions.terminate_reading_prop_value.call(this, scope)
+			if (scope.is_reading(this.syntax.VALUE))
+				return actions.terminate_reading_value.call(this, scope)
+			if (scope.is_reading(this.syntax.UNIT))
+				return actions.terminate_reading_unit.call(this, scope)
 		}
 	}
 
+	// Return the parser for this language
 	return parser(
 		[
 			{
-				reading: 'END',
-				action(scope) {
-					if (scope.is_reading(this.syntax.PROPNAME)) {
-						const prop = scope.get_reading_data(this.syntax.PROP)
-						scope.stop_reading(this.syntax.PROP, true)
-						prop.name = scope.buffer
-						actions.done.call(this, scope, prop)
-					} else
-					if (scope.is_reading(this.syntax.PROPVAL)) {
-						const prop = scope.get_reading_data(this.syntax.PROP)
-						scope.stop_reading(this.syntax.PROP, true)
-						const read = scope.buffer
-						if (read)
-							prop.value.push(read)
-						actions.done.call(this, scope, prop)
-					} else
-					if (scope.is_reading(this.syntax.VALUE)) {
-						const val = scope.get_reading_data(this.syntax.VALUE)
-						const prop = scope.get_reading_data(this.syntax.PROP)
-						val.value = scope.buffer
-						scope.stop_reading(this.syntax.PROP, true)
-						prop.value.push(val)
-						actions.done.call(this, scope, prop)
-					} else
-					if (scope.is_reading(this.syntax.UNIT)) {
-						const val = scope.get_reading_data(this.syntax.VALUE)
-						const prop = scope.get_reading_data(this.syntax.PROP)
-						val.unit = scope.buffer
-						scope.stop_reading(this.syntax.PROP, true)
-						prop.value.push(val)
-						actions.done.call(this, scope, prop)
-					}
-				}
+				syntax: syntax => syntax.END,
+				action: actions.terminate
 			},
 			{
-				reading: "PROPNAME",
-				tokens: "assign",
-				action(scope) {
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					prop.name = scope.buffer
-					prop.value = []
-					scope.stop_reading(this.syntax.PROPNAME)
-					scope.start_reading(this.syntax.PROPVAL)
-				}
+				syntax: syntax => syntax.PROPNAME,
+				tokens: tokens => tokens.ASSIGN,
+				action: actions.read_prop_value_after_prop_name
 			},
 			{
-				reading: "PROPNAME",
-				tokens: "terminate",
-				action(scope) {
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					scope.stop_reading(this.syntax.PROP, true)
-					prop.name = scope.buffer
-					actions.done.call(this, scope, prop)
-				}
+				syntax: syntax => syntax.PROPNAME,
+				tokens: tokens => tokens.TERMINATE,
+				action: actions.terminate_reading_prop_name
 			},
 			{
-				reading: "PROPVAL",
-				tokens: "terminate",
-				action(scope) {
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					scope.stop_reading(this.syntax.PROP, true)
-					const read = scope.buffer
-					if (read)
-						prop.value.push(read)
-					actions.done.call(this, scope, prop)
-				}
+				syntax: syntax => syntax.PROPVAL,
+				tokens: tokens => tokens.TERMINATE,
+				action: actions.terminate_reading_prop_value
 			},
 			{
-				reading: "BRACE",
-				tokens: "terminate",
+				syntax: syntax => syntax.BRACE,
+				tokens: tokens => tokens.TERMINATE,
 				action(scope) {
 					throw new Error('Unclosed bracket')
 				}
 			},
 			{
-				reading: "PROPVAL",
-				tokens: "openbrace",
-				action(scope) {
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					const read = scope.buffer
-					if (read)
-						prop.value.push(read)
-					scope.start_reading(this.syntax.BRACE, {value:[]})
-				}
+				syntax: syntax => syntax.PROPVAL,
+				tokens: tokens => tokens.OPENBRACE,
+				action: actions.start_reading_bracket
 			},
 			{
-				reading: "VALUE",
-				tokens: "closebrace",
+				syntax: syntax => syntax.VALUE,
+				tokens: tokens => tokens.CLOSEBRACE,
 				condition(scope) {
 					return scope.is_reading(this.syntax.BRACE, true)
 				},
-				action(scope) {
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					const prop = scope.get_reading_data(this.syntax.BRACE)
-					val.value = scope.buffer
-					prop.value.push(val)
-					scope.stop_reading(this.syntax.BRACE, true)
-					const par_prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
-
-					par_prop.value.push(prop.value)
-				}
+				action: actions.stop_reading_bracket_after_value
 			},
 			{
-				reading: "UNIT",
-				tokens: "closebrace",
-				action(scope) {
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					const prop = scope.get_reading_data(this.syntax.BRACE)
-					val.unit = scope.buffer
-					prop.value.push(val)
-					scope.stop_reading(this.syntax.BRACE, true)
-					const par_prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
-
-					par_prop.value.push(prop.value)
-				}
+				syntax: syntax => syntax.UNIT,
+				tokens: tokens => tokens.CLOSEBRACE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.BRACE, true)
+				},
+				action: actions.stop_reading_bracket_after_unit
 			},
 			{
-				reading: "BRACE",
-				tokens: "closebrace",
-				action(scope) {
-					scope.stop_reading(this.syntax.BRACE, true)
-				}
+				syntax: syntax => syntax.BRACE,
+				tokens: tokens => tokens.CLOSEBRACE,
+				action: actions.stop_reading_bracket
 			},
 			{
-				reading: "VALUE",
-				tokens: "terminate",
-				action(scope) {
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					val.value = scope.buffer
-					scope.stop_reading(this.syntax.PROP, true)
-					prop.value.push(val)
-					actions.done.call(this, scope, prop)
-				}
+				syntax: syntax => syntax.VALUE,
+				tokens: tokens => tokens.TERMINATE,
+				action: actions.terminate_reading_value
 			},
 			{
-				reading: "UNIT",
-				tokens: "terminate",
-				action(scope) {
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					val.unit = scope.buffer
-					scope.stop_reading(this.syntax.PROP, true)
-					prop.value.push(val)
-					actions.done.call(this, scope, prop)
-				}
+				syntax: syntax => syntax.UNIT,
+				tokens: tokens => tokens.TERMINATE,
+				action: actions.terminate_reading_unit
 			},
 			{
-				reading: "VALUE",
-				tokens: "numeric",
-				action(scope) {
-					return {buffer:scope.currentCharacter}
-				}
+				syntax: syntax => syntax.VALUE,
+				tokens: tokens => tokens.NUMERIC,
+				action: actions.read_character
 			},
 			{
-				reading: "VALUE",
-				tokens: "operators",
-				action(scope) {
-					const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					val.value = scope.buffer
-					prop.value.push(val)
-					prop.value.push({operator:scope.currentCharacter})
-					scope.stop_reading(this.syntax.VALUE)
-				}
+				syntax: syntax => syntax.VALUE,
+				tokens: tokens => tokens.OPERATORS,
+				action: actions.read_operator_after_value
 			},
 			{
-				reading: "PROPVAL",
-				tokens: "operators",
-				action(scope) {
-					const prop = scope.get_reading_data(this.syntax.PROP)
-					prop.value.push({operator:scope.currentCharacter})
-				}
+				syntax: syntax => syntax.PROPVAL,
+				tokens: tokens => tokens.OPERATORS,
+				action: actions.read_operator
 			},
 			{
-				reading: "UNIT",
-				tokens: "operators",
-				action(scope) {
-					const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					val.unit = scope.buffer
-					prop.value.push(val)
-					prop.value.push({operator:scope.currentCharacter})
-					scope.stop_reading(this.syntax.UNIT)
-					scope.stop_reading(this.syntax.VALUE)
-					// scope.start_reading(this.syntax.VALUE, {value:'',unit:false})
-				}
+				syntax: syntax => syntax.UNIT,
+				tokens: tokens => tokens.OPERATORS,
+				action: actions.read_operator_after_unit
 			},
 			{
-				reading: "UNIT",
-				tokens: "whitespace",
-				action(scope) {}
+				syntax: syntax => syntax.UNIT,
+				tokens: tokens => tokens.WHITESPACE,
+				action: actions.do_nothing
 			},
 			{
-				reading: "UNIT",
-				action(scope) {
-					return {buffer:scope.currentCharacter}
-				}
+				syntax: syntax => syntax.UNIT,
+				action: actions.read_character
 			},
 			{
-				reading: "VALUE",
-				tokens: "whitespace",
-				action(scope) {
-					const prop = scope.get_reading_data([this.syntax.PROP, this.syntax.BRACE])
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					val.value = scope.buffer
-					prop.value.push(val)
-					scope.stop_reading(this.syntax.VALUE)
-				}
+				syntax: syntax => syntax.VALUE,
+				tokens: tokens => tokens.WHITESPACE,
+				action: actions.stop_reading_value
 			},
 			{
-				reading: "VALUE",
-				action(scope) {
-					const val = scope.get_reading_data(this.syntax.VALUE)
-					val.value = scope.buffer
-					scope.start_reading(this.syntax.UNIT)
-					return {buffer:scope.currentCharacter}
-				}
+				syntax: syntax => syntax.VALUE,
+				action: actions.start_reading_unit_after_value
 			},
 			{
-				reading: ["PROPVAL", "BRACE"],
-				tokens: "numeric",
-				action(scope) {
-					scope.start_reading(this.syntax.VALUE, {value:'',unit:false})
-					return {buffer:scope.currentCharacter}
-				}
+				syntax: syntax => [syntax.PROPVAL, syntax.BRACE],
+				tokens: tokens => tokens.NUMERIC,
+				action: actions.start_reading_value
 			},
 			{
-				tokens: "whitespace",
-				action(scope) {}
+				tokens: tokens => tokens.WHITESPACE,
+				action: actions.do_nothing
 			},
 			{
-				reading: "PROPNAME",
-				action(scope) {
-					return {buffer:scope.currentCharacter}
-				}
+				syntax: syntax => syntax.PROPNAME,
+				action: actions.read_character
 			},
 			{
-				reading: ["PROPVAL", "BRACE"],
-				action(scope) {
-					return {buffer:scope.currentCharacter}
-				}
+				syntax: syntax => [syntax.PROPVAL, syntax.BRACE],
+				action: actions.read_character
 			},
 			{
-				tokens: "terminate",
-				action(scope) {
-					return {buffer:''}
-				}
+				tokens: tokens => tokens.TERMINATE,
+				action: actions.do_nothing
 			},
 			{
-				not_reading: 'START',
-				action(scope) {
-					scope.start_reading(this.syntax.PROP, {})
-					scope.start_reading(this.syntax.PROPNAME)
-					return {buffer:scope.currentCharacter}
-				}
+				not_syntax: syntax => syntax.START,
+				action: actions.start_reading_prop_name
 			}
 		],
 		["PROP", "PROPNAME", "PROPVAL", "VALUE", "UNIT", "BRACE"],
@@ -1727,8 +1973,11 @@ const css_parser = (() => {
 	)
 })()
 
+
+// HTMA instance
 const instance = instanceOptions => {
 
+	// CSS parser instance setup
 	const css_writers = (() => {
 		const object_writer = {
 			inst: () => ({}),
@@ -1751,14 +2000,19 @@ const instance = instanceOptions => {
 		}
 	})()
 
-	if (instanceOptions.css.defaultWriter)
+	if (instanceOptions.css && instanceOptions.css.defaultWriter)
 		css_writers.default = instanceOptions.css.defaultWriter
 
 	const parse_css = css_parser({
-		css_transformations: instanceOptions.css.transformations.properties || {}
-	}, css_writers, instanceOptions.css.tokens || {})
+		css_transformations: (
+			instanceOptions.css &&
+			instanceOptions.css.transformations &&
+			instanceOptions.css.transformations.properties
+		) || {}
+	}, css_writers, (instanceOptions.css && instanceOptions.css.tokens) || {})
 
 
+	// HTMA parser instance setup
 	const writers = (() => {
 
 		const eventAttrs = [
@@ -1995,9 +2249,10 @@ const instance = instanceOptions => {
 		parse_css,
 	}, writers, instanceOptions.tokens || {})
 
-
+	// Return instance public methods
 	return {
 		parse,
+		template: (str, options) => args => parse(str, args, options),
 		parse_css,
 		css_writers,
 		writers,
@@ -2007,6 +2262,7 @@ const instance = instanceOptions => {
 	}
 }
 
+// Default instance with default config
 return instance({
 	css: {
 		tokens: {
