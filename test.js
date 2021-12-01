@@ -264,7 +264,7 @@ const encodeEntities = (() => {
 const debugStepper = (input, debug) => {
   const cont = document.createElement('div')
   cont.style.clear = 'both'
-  let ind = 1
+  let ind = 0
   const cont_text = document.createElement('pre')
   const cont_read = document.createElement('pre')
   const cont_out = document.createElement('pre')
@@ -368,6 +368,12 @@ class HTMA_Tester {
           debug: debug_call
         })
       } else
+      if (writeMode === 'js') {
+        actual = htma.parse_js(input, args, {
+					outputString: true,
+          debug: debug_call
+        })
+      } else
       {
         actual = htma.parse(input, args, {
 					outputString: true,
@@ -387,7 +393,12 @@ class HTMA_Tester {
 	      })
 			}
     }
-    if (actual === expected && !failure) {
+    if (
+			// actual === expected
+			false
+			&&
+			!failure
+		) {
       orig_log('%cShould '+desc, 'color:#090')
     } else {
       console.error('Did not '+desc)
@@ -434,6 +445,595 @@ htma.add(class TestComponent {
 
 
 new HTMA_Tester()
+.add(
+	/*
+	{
+		writeMode: 'js',
+		input: `test&&tast&&last`,
+		expected: `internal_props.test&&internal_props.tast&&internal_props.last`
+	},
+	{
+		writeMode: 'js',
+		input: ` test  &&   tast &&    last   `,
+		expected: ` internal_props.test  &&   internal_props.tast &&    internal_props.last   `
+	},
+	{
+		writeMode: 'js',
+		input: `[test,tast,test.last]`,
+		expected: `[internal_props.test,internal_props.tast,internal_props.test.last]`
+	},
+	{
+		writeMode: 'js',
+		input: ` [   test  ,  tast ,  test.last  ] `,
+		expected: ` [   internal_props.test  ,  internal_props.tast ,  internal_props.test.last  ] `
+	},
+	{
+		writeMode: 'js',
+		input: `"thingy thangy"`,
+		expected: `"thingy thangy"`
+	},
+	{
+		writeMode: 'js',
+		input: `  " thingy thangy  "  `,
+		expected: `  " thingy thangy  "  `
+	},
+	{
+		writeMode: 'js',
+		input: `{objkey:value}`,
+		expected: `{objkey:internal_props.value}`
+	},
+	{
+		writeMode: 'js',
+		input: `  {   objkey :  value  }   `,
+		expected: `  {   objkey :  internal_props.value  }   `
+	},
+	{
+		writeMode: 'js',
+		input: `{[varkey]:value}`,
+		expected: `{[internal_props.varkey]:internal_props.value}`
+	},
+	{
+		writeMode: 'js',
+		input: `  { [ varkey  ] :  value  }  `,
+		expected: `  { [ internal_props.varkey  ] :  internal_props.value  }  `
+	},
+	*/
+	{
+		writeMode: 'js',
+		input: `{"objkey":value}`,
+		expected: `{"objkey":internal_props.value}`
+	},
+	{
+		writeMode: 'js',
+		input: `  {  "  objkey "  :  value }  `,
+		expected: `  {  "  objkey "  :  internal_props.value }  `
+	},
+	{
+		writeMode: 'js',
+		input: `{"objkey":'value'}`,
+		expected: `{"objkey":'value'}`
+	},
+	{
+		writeMode: 'js',
+		input: ` {  "  objkey " :  '  value ' }  `,
+		expected: ` {  "  objkey " :  '  value ' }  `
+	},
+	{
+		writeMode: 'js',
+		input: `someCall(someargs,andMore)`,
+		expected: `internal_props.someCall(internal_props.someargs,internal_props.andMore)`
+	},
+	{
+		writeMode: 'js',
+		input: `  someCall  (  someargs ,  andMore  ) `,
+		expected: `  internal_props.someCall  (  internal_props.someargs ,  internal_props.andMore  ) `
+	},
+	{
+		"writeMode": "js",
+		"input": "true",
+		"expected": "true"
+	},
+	{
+		"writeMode": "js",
+		"input": "false",
+		"expected": "false"
+	},
+	{
+		"writeMode": "js",
+		"input": "test",
+		"expected": "internal_props.test"
+	},
+	{
+		"writeMode": "js",
+		"input": "'subval'",
+		"expected": "'subval'"
+	},
+	{
+		"writeMode": "js",
+		"input": "[\"sin\",\"square\",\"saw\",\"triangle\",\"line\"]",
+		"expected": "[\"sin\",\"square\",\"saw\",\"triangle\",\"line\"]"
+	},
+	{
+		"writeMode": "js",
+		"input": "name",
+		"expected": "internal_props.name"
+	},
+	{
+		"writeMode": "js",
+		"input": "obj.sub.test",
+		"expected": "internal_props.obj.sub.test"
+	},
+	{
+		"writeMode": "js",
+		"input": "test+test2",
+		"expected": "internal_props.test+internal_props.test2"
+	},
+	{
+		"writeMode": "js",
+		"input": "test2",
+		"expected": "internal_props.test2"
+	},
+	{
+		"writeMode": "js",
+		"input": "set",
+		"expected": "internal_props.set"
+	},
+	{
+		"writeMode": "js",
+		"input": "a",
+		"expected": "internal_props.a"
+	},
+	{
+		"writeMode": "js",
+		"input": "b",
+		"expected": "internal_props.b"
+	},
+	{
+		"writeMode": "js",
+		"input": "['a','b','c']",
+		"expected": "['a','b','c']"
+	},
+	{
+		"writeMode": "js",
+		"input": "{'a':1,'b':2,'c':3}",
+		"expected": "{'a':1,'b':2,'c':3}"
+	},
+	{
+		"writeMode": "js",
+		"input": "3",
+		"expected": "3"
+	},
+	{
+		"writeMode": "js",
+		"input": "2",
+		"expected": "2"
+	},
+	{
+		"writeMode": "js",
+		"input": "6",
+		"expected": "6"
+	},
+	{
+		"writeMode": "js",
+		"input": "7",
+		"expected": "7"
+	},
+	{
+		"writeMode": "js",
+		"input": "attr",
+		"expected": "internal_props.attr"
+	},
+	{
+		"writeMode": "js",
+		"input": "list",
+		"expected": "internal_props.list"
+	},
+	{
+		"writeMode": "js",
+		"input": "rettr()",
+		"expected": "internal_props.rettr()"
+	},
+	{
+		"writeMode": "js",
+		"input": "items",
+		"expected": "internal_props.items"
+	},
+	{
+		"writeMode": "js",
+		"input": "getterFunc",
+		"expected": "internal_props.getterFunc"
+	},
+	{
+		"writeMode": "js",
+		"input": "i",
+		"expected": "internal_props.i"
+	},
+	{
+		"writeMode": "js",
+		"input": "var && obj",
+		"expected": "internal_props.var && internal_props.obj"
+	},
+	{
+		"writeMode": "js",
+		"input": "obj.test[var]",
+		"expected": "internal_props.obj.test[internal_props.var]"
+	},
+	{
+		"writeMode": "js",
+		"input": "things",
+		"expected": "internal_props.things"
+	},
+	{
+		"writeMode": "js",
+		"input": "thing != 'hello'",
+		"expected": "internal_props.thing != 'hello'"
+	},
+	{
+		"writeMode": "js",
+		"input": "thing",
+		"expected": "internal_props.thing"
+	},
+	{
+		"writeMode": "js",
+		"input": "l",
+		"expected": "internal_props.l"
+	},
+	{
+		"writeMode": "js",
+		"input": "class",
+		"expected": "internal_props.class"
+	},
+	{
+		"writeMode": "js",
+		"input": "a+b",
+		"expected": "internal_props.a+internal_props.b"
+	},
+	{
+		"writeMode": "js",
+		"input": "instruments",
+		"expected": "internal_props.instruments"
+	},
+	{
+		"writeMode": "js",
+		"input": "updateInstruments",
+		"expected": "internal_props.updateInstruments"
+	},
+	{
+		"writeMode": "js",
+		"input": "id",
+		"expected": "internal_props.id"
+	},
+	{
+		"writeMode": "js",
+		"input": "id === selectedInstrument",
+		"expected": "internal_props.id === internal_props.selectedInstrument"
+	},
+	{
+		"writeMode": "js",
+		"input": "selectInstrument(id)",
+		"expected": "internal_props.selectInstrument(internal_props.id)"
+	},
+	{
+		"writeMode": "js",
+		"input": "removeInstrument(id)",
+		"expected": "internal_props.removeInstrument(internal_props.id)"
+	},
+	{
+		"writeMode": "js",
+		"input": "instrument",
+		"expected": "internal_props.instrument"
+	},
+	{
+		"writeMode": "js",
+		"input": "updateInstrument(id,...arguments)",
+		"expected": "internal_props.updateInstrument(internal_props.id,...internal_props.arguments)"
+	},
+	{
+		"writeMode": "js",
+		"input": "setCanvas(this)",
+		"expected": "internal_props.setCanvas(internal_props.this)"
+	},
+	{
+		"writeMode": "js",
+		"input": "steps",
+		"expected": "internal_props.steps"
+	},
+	{
+		"writeMode": "js",
+		"input": "isMuted(i)",
+		"expected": "internal_props.isMuted(internal_props.i)"
+	},
+	{
+		"writeMode": "js",
+		"input": "i",
+		"expected": "internal_props.i"
+	},
+	{
+		"writeMode": "js",
+		"input": "step",
+		"expected": "internal_props.step"
+	},
+	{
+		"writeMode": "js",
+		"input": "updateStep(i,...arguments)",
+		"expected": "internal_props.updateStep(internal_props.i,...internal_props.arguments)"
+	},
+	{
+		"writeMode": "js",
+		"input": "!isMuted(i)",
+		"expected": "!internal_props.isMuted(internal_props.i)"
+	},
+	{
+		"writeMode": "js",
+		"input": "false",
+		"expected": "false"
+	},
+	{
+		"writeMode": "js",
+		"input": "volume",
+		"expected": "internal_props.volume"
+	},
+	{
+		"writeMode": "js",
+		"input": "0",
+		"expected": "0"
+	},
+	{
+		"writeMode": "js",
+		"input": "2",
+		"expected": "2"
+	},
+	{
+		"writeMode": "js",
+		"input": "0.001",
+		"expected": "0.001"
+	},
+	{
+		"writeMode": "js",
+		"input": "0.2",
+		"expected": "0.2"
+	},
+	{
+		"writeMode": "js",
+		"input": "volume=value",
+		"expected": "internal_props.volume=internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "enabled",
+		"expected": "internal_props.enabled"
+	},
+	{
+		"writeMode": "js",
+		"input": "(270*(value-min)/(max-min))-45",
+		"expected": "(270*(internal_props.value-internal_props.min)/(internal_props.max-internal_props.min))-45"
+	},
+	{
+		"writeMode": "js",
+		"input": "startChanging(this,event)",
+		"expected": "internal_props.startChanging(internal_props.this,internal_props.event)"
+	},
+	{
+		"writeMode": "js",
+		"input": "incCount",
+		"expected": "internal_props.incCount"
+	},
+	{
+		"writeMode": "js",
+		"input": "(270*i*inc/(max-min))-45",
+		"expected": "(270*internal_props.i*internal_props.inc/(internal_props.max-internal_props.min))-45"
+	},
+	{
+		"writeMode": "js",
+		"input": "form",
+		"expected": "internal_props.form"
+	},
+	{
+		"writeMode": "js",
+		"input": "[\"sine\",\"square\",\"sawtooth\",\"triangle\",\"line\"]",
+		"expected": "[\"sine\",\"square\",\"sawtooth\",\"triangle\",\"line\"]"
+	},
+	{
+		"writeMode": "js",
+		"input": "form=value",
+		"expected": "internal_props.form=internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "label || name",
+		"expected": "internal_props.label || internal_props.name"
+	},
+	{
+		"writeMode": "js",
+		"input": "name",
+		"expected": "internal_props.name"
+	},
+	{
+		"writeMode": "js",
+		"input": "onupdate(event.target.value)",
+		"expected": "internal_props.onupdate(internal_props.event.target.value)"
+	},
+	{
+		"writeMode": "js",
+		"input": "!enabled",
+		"expected": "!internal_props.enabled"
+	},
+	{
+		"writeMode": "js",
+		"input": "options",
+		"expected": "internal_props.options"
+	},
+	{
+		"writeMode": "js",
+		"input": "option",
+		"expected": "internal_props.option"
+	},
+	{
+		"writeMode": "js",
+		"input": "option === value",
+		"expected": "internal_props.option === internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "labels[option]",
+		"expected": "internal_props.labels[internal_props.option]"
+	},
+	{
+		"writeMode": "js",
+		"input": "mode",
+		"expected": "internal_props.mode"
+	},
+	{
+		"writeMode": "js",
+		"input": "[\"add\",\"mult\",\"trans\"]",
+		"expected": "[\"add\",\"mult\",\"trans\"]"
+	},
+	{
+		"writeMode": "js",
+		"input": "mode=value",
+		"expected": "internal_props.mode=internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "scale.main",
+		"expected": "internal_props.scale.main"
+	},
+	{
+		"writeMode": "js",
+		"input": "scale.exp",
+		"expected": "internal_props.scale.exp"
+	},
+	{
+		"writeMode": "js",
+		"input": "scale.fine",
+		"expected": "internal_props.scale.fine"
+	},
+	{
+		"writeMode": "js",
+		"input": "11",
+		"expected": "11"
+	},
+	{
+		"writeMode": "js",
+		"input": "0.01",
+		"expected": "0.01"
+	},
+	{
+		"writeMode": "js",
+		"input": "scale=value",
+		"expected": "internal_props.scale=internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "setDisplay(this)",
+		"expected": "internal_props.setDisplay(internal_props.this)"
+	},
+	{
+		"writeMode": "js",
+		"input": "value",
+		"expected": "internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "exp",
+		"expected": "internal_props.exp"
+	},
+	{
+		"writeMode": "js",
+		"input": "-1",
+		"expected": "-1"
+	},
+	{
+		"writeMode": "js",
+		"input": "0.1",
+		"expected": "0.1"
+	},
+	{
+		"writeMode": "js",
+		"input": "1",
+		"expected": "1"
+	},
+	{
+		"writeMode": "js",
+		"input": "update('exp')",
+		"expected": "internal_props.update('exp')"
+	},
+	{
+		"writeMode": "js",
+		"input": "main",
+		"expected": "internal_props.main"
+	},
+	{
+		"writeMode": "js",
+		"input": "min",
+		"expected": "internal_props.min"
+	},
+	{
+		"writeMode": "js",
+		"input": "max",
+		"expected": "internal_props.max"
+	},
+	{
+		"writeMode": "js",
+		"input": "update('main')",
+		"expected": "internal_props.update('main')"
+	},
+	{
+		"writeMode": "js",
+		"input": "fine",
+		"expected": "internal_props.fine"
+	},
+	{
+		"writeMode": "js",
+		"input": "update('fine')",
+		"expected": "internal_props.update('fine')"
+	},
+	{
+		"writeMode": "js",
+		"input": "offset.main",
+		"expected": "internal_props.offset.main"
+	},
+	{
+		"writeMode": "js",
+		"input": "offset.exp",
+		"expected": "internal_props.offset.exp"
+	},
+	{
+		"writeMode": "js",
+		"input": "offset.fine",
+		"expected": "internal_props.offset.fine"
+	},
+	{
+		"writeMode": "js",
+		"input": "-11",
+		"expected": "-11"
+	},
+	{
+		"writeMode": "js",
+		"input": "offset=value",
+		"expected": "internal_props.offset=internal_props.value"
+	},
+	{
+		"writeMode": "js",
+		"input": "isMuted(i) ? unmuteStep(i) : muteStep(i)",
+		"expected": "internal_props.isMuted(internal_props.i) ? internal_props.unmuteStep(internal_props.i) : internal_props.muteStep(internal_props.i)"
+	},
+	{
+		"writeMode": "js",
+		"input": "removeStep(i)",
+		"expected": "internal_props.removeStep(internal_props.i)"
+	},
+	{
+		"writeMode": "js",
+		"input": "addStep()",
+		"expected": "internal_props.addStep()"
+	},
+	{
+		"writeMode": "js",
+		"input": "addInstrument()",
+		"expected": "internal_props.addInstrument()"
+	},
+)
 .add(
   {
     desc: "render a tag and its close tag when just the open tag is provided",
@@ -1281,14 +1881,14 @@ new HTMA_Tester()
   }
 )
 
-//*
+/*
 .variate((testcase) => [
   {...testcase,writeMode:'string'},
   {...testcase,writeMode:'dom',desc:(testcase.desc||'')+' DOM',...(testcase.expectedDOM ? {expected:testcase.expectedDOM} : {})},
   {...testcase,writeMode:'obj',desc:(testcase.desc||'')+' Object',...(testcase.expectedObj ? {expected:testcase.expectedObj} : {})},
 ])
 //*/
-//*
+/*
 .variate((testcase) => {
   const variations = [
     {

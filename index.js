@@ -353,7 +353,7 @@ const mergeOptions = (def, ovr) => {
 		)
 			ret[k] = mergeOptions(def[k], ovr[k] || {})
 		// Use value and fall back to default
-		ret[k] = ovr[k] || def[k]
+		else ret[k] = ovr[k] || def[k]
 	}
 
 	// Merge anything else that exists in the override
@@ -366,7 +366,7 @@ const mergeOptions = (def, ovr) => {
 		if (typeof ovr[k] === 'object' && !Array.isArray(ovr[k]))
 			ret[k] = mergeOptions({}, ovr[k])
 		// Use value
-		ret[k] = ovr[k]
+		else ret[k] = ovr[k]
 	}
 
 	return ret
@@ -381,7 +381,9 @@ class Executor {
 	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null']
 	// Keywords in a lookup table for quick access
 	#keywords = {}
-	constructor() {
+	#parser
+	constructor(parse_js) {
+		this.#parser = parse_js
 		this.#keywords = Object.fromEntries(this.#keyword_list.map(kw => [kw,1]))
 	}
 
@@ -393,7 +395,7 @@ class Executor {
 		// Wrapper for eval that returns the result of the expression
 		let result
 		try {
-			eval(`result = (${exp})`)
+			result = Function('internal_props', `return (${exp})`)(internal_props)
 		} catch (e) {
 			console.error(e, exp, internal_props)
 		}
@@ -401,32 +403,7 @@ class Executor {
 	}
 
 	rebase_vars (expression, newBase) {
-		// Prefix all variable names in the expression with scope variable
-
-		let replace_feed = expression
-		let replace_result = ''
-		const repl_match = match => {
-			const str = match[0]
-			replace_result += replace_feed.slice(0, match.index)
-			replace_result += str in this.#keywords ? str : `${newBase}.${str}`
-			replace_feed = replace_feed.slice(match.index + str.length)
-		}
-
-		// Prefix variable names at the start of the string, only do this once
-		const firstMatch = replace_feed.match(/^([a-z_]+[a-z0-9_]*)/i)
-		if (firstMatch) repl_match(firstMatch)
-
-		// Prefix variables after the first one, do his until there are no more
-		while (replace_feed.length) {
-			const m = replace_feed.match(/(?<=([\[\s&|^\(\+\/\*\-,:=!]|\.\.\.))([a-z_]+[a-z0-9_]*)/i)
-			if (m) repl_match(m)
-			else break
-		}
-
-		// Add on anything left over after the last variable reference
-		replace_result += replace_feed
-
-		return replace_result
+		return this.#parser(expression)
 	}
 
 	exec (expression, internal_props) {
@@ -445,9 +422,10 @@ class Scope {
 	#string = ''
 	#writer = {}
 	#writer_instance
-	constructor (string = '', props = {}, writer = {}) {
+	constructor (string = '', props = {}, writer = {}, parse_js) {
 		this.#string = string
 		this.#props = props
+		this.#executor = new Executor(parse_js)
 
 		const dump_fun = method => (...args) => method(this.#writer_instance, ...args)
 		const mod_fun = method => (...args) => {
@@ -455,7 +433,6 @@ class Scope {
 			if (typeof result !== 'undefined')
 				this.#writer_instance = result
 		}
-
 		this.#writer_instance = writer.inst()
 		this.#writer = Object.fromEntries(
 			Object.entries(writer)
@@ -476,7 +453,7 @@ class Scope {
 	get props() {
 		return this.#props
 	}
-	#executor = new Executor()
+	#executor
 	exec(expression) {
 		return this.#executor.exec(expression, this.#props)
 	}
@@ -811,7 +788,7 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 			validate_writer('custom', writer)
 
 			// Init scope
-			const scope = new Scope(str, args, writer)
+			const scope = new Scope(str, args, writer, instance.parse_js)
 
 			// The debug function that reports data on each step
 			const debug = (index, chosenCondition) =>
@@ -843,9 +820,9 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 				debug(0, -2)
 			quick_conditions.syntax_system_start.token_system_default
 				.forEach(condition => {
-					if (debug_call)
-						debug(0, conditions.indexOf(condition))
 					condition.action.call(pass_instance, scope, passthrough)
+					if (debug_call)
+						debug(0, normalised_conditions.indexOf(condition))
 				})
 
 
@@ -855,7 +832,7 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 
 				// Record each step of the parsing
 				if (debug_call)
-					debug(scope.index+1, conditions.indexOf(foundCondition))
+					debug(scope.index+1, normalised_conditions.indexOf(foundCondition))
 			}
 
 			// Final debug step, after all actions
@@ -863,9 +840,9 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 				debug(str.length+1, -3)
 			quick_conditions.syntax_system_end.token_system_default
 				.forEach(condition => {
-					if (debug_call)
-						debug(str.length+1, conditions.indexOf(condition))
 					condition.action.call(pass_instance, scope, passthrough)
+					if (debug_call)
+						debug(str.length+1, normalised_conditions.indexOf(condition))
 				})
 
 
@@ -951,7 +928,10 @@ const htma_parser = (() => {
 
 		// Transform the attribute to others if the value is found in the transformations
 		if (attr_tr.trans) {
-			const transed = attr_tr.trans[val]
+
+			const transed = typeof attr_tr.trans === 'function'
+				? attr_tr.trans(val)
+				: attr_tr.trans[val]
 
 			// Recursively transform the resulting attributes to ensure they are all resolved
 			if (transed)
@@ -1973,6 +1953,199 @@ const css_parser = (() => {
 	)
 })()
 
+const js_parser = (() => {
+	return parser(
+		[
+			{
+				syntax: syntax => syntax.END,
+				action(scope) {
+					if (scope.is_reading(this.syntax.VAR)) {
+						scope.writer.var(scope.buffer)
+					} else {
+						scope.writer.other(scope.buffer)
+					}
+				}
+			},
+			{
+				syntax: syntax => syntax.START,
+				action(scope) {
+				}
+			},
+			{
+				syntax: syntax => syntax.STRING,
+				tokens: tokens => tokens.QUOTE,
+				condition(scope) {
+					return scope.reading_data.open === scope.currentCharacter
+				},
+				action(scope) {
+					scope.stop_reading(this.syntax.STRING)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.STRING,
+				tokens: tokens => tokens.ESCAPE,
+				action(scope) {
+					scope.start_reading(this.syntax.ESCAPE)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.ESCAPE,
+				action(scope) {
+					scope.stop_reading(this.syntax.ESCAPE)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				tokens: tokens => tokens.QUOTE,
+				syntax: syntax => syntax.OBJECT,
+				action(scope) {
+					scope.start_reading(this.syntax.OBJKEY)
+					scope.start_reading(this.syntax.STRING, {open:scope.currentCharacter})
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				tokens: tokens => tokens.QUOTE,
+				action(scope) {
+					scope.start_reading(this.syntax.STRING, {open:scope.currentCharacter})
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				tokens: tokens => tokens.CURLYBRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.OBJECT)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJECT,
+				tokens: tokens => tokens.DEFAULT,
+				action(scope) {
+					scope.start_reading(this.syntax.OBJKEY)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJECT,
+				tokens: tokens => tokens.SQUAREBRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.OBJKEY)
+					scope.start_reading(this.syntax.OBJKEYDYN)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJKEY,
+				tokens: tokens => tokens.OBJASSIGN,
+				action(scope) {
+					scope.stop_reading(this.syntax.OBJKEY)
+					scope.start_reading(this.syntax.OBJVAL)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.BRACEOPEN,
+				action(scope) {
+					scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.VAR)
+					scope.start_reading(this.syntax.FUNCARGS)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.SQUAREBRACEOPEN,
+				action(scope) {
+					scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.VAR)
+					scope.start_reading(this.syntax.OBJKEYDYN)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.SQUAREBRACECLOSE,
+				action(scope) {
+					scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.VAR)
+					if (scope.is_reading(this.syntax.ARRAY))
+						scope.stop_reading(this.syntax.ARRAY)
+					else
+					if (scope.is_reading(this.syntax.OBJKEYDYN))
+						scope.stop_reading(this.syntax.OBJKEYDYN)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJKEYDYN,
+				tokens: tokens => tokens.SQUAREBRACECLOSE,
+				action(scope) {
+					// scope.writer.other(scope.buffer)
+					// if (scope.is_reading(this.syntax.ARRAY))
+					// 	scope.stop_reading(this.syntax.ARRAY)
+					// else
+					// if (scope.is_reading(this.syntax.OBJKEYDYN))
+					scope.stop_reading(this.syntax.OBJKEYDYN)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				tokens: tokens => tokens.SQUAREBRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.ARRAY)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				not_syntax: syntax => syntax.STRING,
+				tokens: tokens => tokens.CURLYBRACECLOSE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.OBJECT, true)
+				},
+				action(scope) {
+					if (scope.is_reading(this.syntax.VAR))
+						scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.OBJECT, true)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => [tokens.OPERATOR,tokens.SEPARATOR],
+				action(scope) {
+					scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.VAR)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				not_syntax: syntax => [syntax.VAR,syntax.STRING,syntax.OBJKEY,syntax.OBJECT],
+				tokens: tokens => tokens.DEFAULT,
+				action(scope) {
+					scope.writer.other(scope.buffer)
+					scope.start_reading(this.syntax.VAR)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				action(scope) {
+					return {buffer:scope.currentCharacter}
+				}
+			}
+		],
+		["STRING","OBJECT","ARRAY","FUNCARGS","FUNCCONT","OBJVAL","OBJKEY","VAR","ESCAPE","OBJKEYDYN","DOT"],
+		["CURLYBRACEOPEN","SQUAREBRACEOPEN","BRACEOPEN","CURLYBRACECLOSE","SQUAREBRACECLOSE","BRACECLOSE","QUOTE","OPERATOR","SEPARATOR","ESCAPE","OBJASSIGN","DOT"],
+		{
+			var: "",
+			other: "",
+		}
+	)
+})()
+
 
 // HTMA instance
 const instance = instanceOptions => {
@@ -2010,6 +2183,38 @@ const instance = instanceOptions => {
 			instanceOptions.css.transformations.properties
 		) || {}
 	}, css_writers, (instanceOptions.css && instanceOptions.css.tokens) || {})
+
+	const parse_js = js_parser(
+		{rebase_name: 'internal_props'},
+		{
+			default: {
+				inst: () => '',
+				dump: inst => inst,
+				var: (inst, name) => {
+					const reseverd = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null','return']
+					if (reseverd.includes(name)) return inst+name
+					const first = name.charCodeAt(0)
+					if (first >= 48 && first <= 57) return inst+name
+					return inst+'internal_props.'+name
+				},
+				other: (inst, str) => inst+str
+			}
+		},
+		{
+			CURLYBRACEOPEN: ['{'],
+			SQUAREBRACEOPEN: ['['],
+			BRACEOPEN: ['('],
+			CURLYBRACECLOSE: ['}'],
+			SQUAREBRACECLOSE: [']'],
+			BRACECLOSE: [')'],
+			QUOTE: ['"',"'",'`'],
+			OPERATOR: ['+','-','/','*','&','|','!','=','?'],
+			SEPARATOR: [',',' ','\t','\n'],
+			ESCAPE: ['\\'],
+			OBJASSIGN: [':'],
+			DOT: ['.']
+		}
+	)
 
 
 	// HTMA parser instance setup
@@ -2247,6 +2452,7 @@ const instance = instanceOptions => {
 		commonAttributeAliases,
 		attributeTransformations: instanceOptions.transformations.attributes || {},
 		parse_css,
+		parse_js,
 	}, writers, instanceOptions.tokens || {})
 
 	// Return instance public methods
@@ -2254,6 +2460,7 @@ const instance = instanceOptions => {
 		parse,
 		template: (str, options) => args => parse(str, args, options),
 		parse_css,
+		parse_js,
 		css_writers,
 		writers,
 		custom: (opts = {}) =>
