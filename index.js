@@ -2058,6 +2058,25 @@ const js_parser = (() => {
 			},
 			{
 				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.BRACECLOSE,
+				action(scope) {
+					scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.VAR)
+					if (scope.is_reading(this.syntax.FUNCARGS))
+						scope.stop_reading(this.syntax.FUNCARGS)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.FUNCARGS,
+				tokens: tokens => tokens.BRACECLOSE,
+				action(scope) {
+					scope.stop_reading(this.syntax.FUNCARGS)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
 				tokens: tokens => tokens.SQUAREBRACEOPEN,
 				action(scope) {
 					scope.writer.var(scope.buffer)

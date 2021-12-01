@@ -497,7 +497,6 @@ new HTMA_Tester()
 		input: `  { [ varkey  ] :  value  }  `,
 		expected: `  { [ internal_props.varkey  ] :  internal_props.value  }  `
 	},
-	*/
 	{
 		writeMode: 'js',
 		input: `{"objkey":value}`,
@@ -823,6 +822,7 @@ new HTMA_Tester()
 		"input": "(270*i*inc/(max-min))-45",
 		"expected": "(270*internal_props.i*internal_props.inc/(internal_props.max-internal_props.min))-45"
 	},
+  */
 	{
 		"writeMode": "js",
 		"input": "form",
