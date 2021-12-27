@@ -378,7 +378,7 @@ class Executor {
 	// Containment class for executing arbitrary code in user-defined expressions
 
 	// List of allowed keywords that are not interpreted as variable names
-	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null']
+	#keyword_list = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null','parseFloat','parseInt']
 	// Keywords in a lookup table for quick access
 	#keywords = {}
 	#parser
@@ -503,9 +503,11 @@ class Scope {
 	}
 	is_reading (type, parents = false) {
 		const types = Array.isArray(type) ? type : [type]
-		if (parents)
+		if (parents === true)
 			return this.#reading.some(e => types.includes(e.type))
-		return this.#reading[0] && types.includes(this.#reading[0].type)
+		if (parents === false)
+			return this.#reading[0] && types.includes(this.#reading[0].type)
+		return this.#reading[parents] && types.includes(this.#reading[parents].type)
 	}
 	get_all_reading_data(type = false, until = false) {
 		const types = Array.isArray(type) ? type : [type]
@@ -795,7 +797,7 @@ const parser = (conditions = [], syntax_list = [], token_list = [], writer_inter
 				debug_call(index, JSON.parse(JSON.stringify(scope.data)), chosenCondition)
 			// The debug call that will be passed through to writer.nest calls, takes index first to re-base the debug pointer
 			const subDebugCall = debug_call
-				? (index) => (ind, dat, ch) => debug_call(index+ind+1, dat, ch)
+				? (index) => (ind, dat, ch) => debug_call(index+ind+1, dat, ch, true)
 				: () => false
 
 			// All options passed through to the writer.nest calls
@@ -980,6 +982,8 @@ const htma_parser = (() => {
 				const contents = custom.template
 				const defs = new custom.defaults()
 				Object.assign(defs, tag.attrs)
+				if (defs.afterConstructed)
+					defs.afterConstructed()
 
 				scope.writer.nest(
 					contents,
@@ -1282,7 +1286,7 @@ const htma_parser = (() => {
 			child_tag.indent = indent
 		},
 		start_reading_tag_inside_attribute_value(scope) {
-			scope.get_reading_data(this.syntax.ATTRVAL).value = scope.buffer
+			scope.get_reading_data(this.syntax.ATTRVAL).value += scope.buffer
 			actions.start_reading_tag.call(this, scope)
 		},
 		start_reading_tag_content_after_class(scope, passthrough) {
@@ -2013,9 +2017,228 @@ const js_parser = (() => {
 					return {buffer:scope.currentCharacter}
 				}
 			},
+
+
+			{
+				syntax: syntax => [syntax.VAR,syntax.OBJVAL],
+				tokens: tokens => tokens.BRACEOPEN,
+				action(scope) {
+					if (scope.is_reading(this.syntax.VAR)) {
+						scope.writer.var(scope.buffer)
+						scope.stop_reading(this.syntax.VAR)
+					}
+					scope.start_reading(this.syntax.FUNCARGS)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.BRACECLOSE,
+				action(scope) {
+					const varname = scope.buffer
+					scope.writer.var(varname)
+					scope.stop_reading(this.syntax.VAR)
+					if (scope.is_reading(this.syntax.BRACES))
+						scope.stop_reading(this.syntax.BRACES)
+					if (scope.is_reading(this.syntax.FUNCARGS)) {
+						scope.stop_reading(this.syntax.FUNCARGS)
+						scope.start_reading(this.syntax.OBJECTACCESS)
+					}
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.FUNCARGS,
+				tokens: tokens => tokens.BRACECLOSE,
+				action(scope) {
+					scope.stop_reading(this.syntax.FUNCARGS)
+					scope.start_reading(this.syntax.OBJECTACCESS)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+
+
+/*
+
+			{
+				syntax: syntax => syntax.FUNCDEF,
+				tokens: tokens => tokens.CURLYBRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.FUNCCONT)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.FUNCCONT,
+				tokens: tokens => tokens.CURLYBRACECLOSE,
+				action(scope) {
+					scope.stop_reading(this.syntax.FUNCCONT)
+					scope.stop_reading(this.syntax.FUNCDEF)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.FUNCDEF,
+				tokens: tokens => tokens.BRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.FUNCCONTBRACED)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				tokens: tokens => tokens.CURLYBRACECLOSE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.FUNCCONT, true)
+				},
+				action(scope) {
+					if (scope.is_reading(this.syntax.VAR))
+						scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.FUNCCONT, true)
+					scope.stop_reading(this.syntax.FUNCDEF)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				tokens: tokens => tokens.BRACECLOSE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.FUNCCONTBRACED, 0) || scope.is_reading(this.syntax.FUNCCONTBRACED, 1)
+				},
+				action(scope) {
+					if (scope.is_reading(this.syntax.VAR))
+						scope.writer.var(scope.buffer)
+					scope.stop_reading(this.syntax.FUNCCONTBRACED, true)
+					scope.stop_reading(this.syntax.FUNCDEF)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+
+
+			{
+				tokens: tokens => tokens.BRACEOPEN,
+				action(scope) {
+					const contents = scope.buffer+scope.currentCharacter
+					if (scope.is_reading(this.syntax.BRACES))
+						scope.reading_data.contents += contents
+					else scope.writer.other(contents)
+					scope.start_reading(this.syntax.BRACES, {contents:''})
+					return {setBuffer:''}
+				}
+			},
+			{
+				syntax: syntax => syntax.BRACES,
+				tokens: tokens => tokens.BRACECLOSE,
+				action(scope, passthrough) {
+					scope.stop_reading(this.syntax.BRACES)
+					const conts = scope.buffer
+					// Detect args
+					const is_args = conts.match(/^(\s*|(\s*[a-z0-9_-]+\s*)(,(\s*[a-z0-9_-]+\s*))*)$/mi)
+					console.log(conts, Boolean(is_args))
+					if (is_args) {
+						const args = conts.split(/[\s,]+/gim).filter(filter_truthy)
+						scope.writer.other(conts)
+						scope.start_reading(this.syntax.FUNCDEF, {args})
+					} else {
+						// sub-parse
+						scope.writer.nest(conts, scope.props, { ...passthrough, debug: passthrough.debug(scope.index-conts.length-1) })
+
+							// scope.writer.nest(
+							// 	contents,
+							// 	nest_props(scope.props, {
+							// 		[loop.varname]: val,
+							// 		...(loop.keyname ? {[loop.keyname]: key } : {})
+							// 	}),
+							// 	{ ...passthrough }))
+					}
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.BRACES,
+				tokens: tokens => tokens.DEFAULT,
+				action(scope) {
+					return {buffer:scope.currentCharacter}
+				}
+			},
+
+			/*
+			{
+				syntax: syntax => syntax.OBJVAL,
+				tokens: tokens => tokens.BRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.BRACES)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.BRACES,
+				tokens: tokens => tokens.BRACECLOSE,
+				action(scope) {
+					scope.stop_reading(this.syntax.BRACES)
+					scope.start_reading(this.syntax.FUNCDEF, {args:[]})
+					// If no contents then funcargs
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.SEPARATOR,
+				condition(scope) {
+					return scope.is_reading(this.syntax.BRACES, true)
+				},
+				action(scope) {
+					scope.stop_reading(this.syntax.VAR)
+					scope.stop_reading(this.syntax.BRACES)
+					const varname = scope.buffer
+					scope.start_reading(this.syntax.FUNCDEFARGS, {args:[varname]})
+					scope.writer.other(varname)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.SEPARATOR,
+				condition(scope) {
+					return scope.is_reading(this.syntax.FUNCDEFARGS, true)
+				},
+				action(scope) {
+					scope.stop_reading(this.syntax.VAR)
+					const varname = scope.buffer
+					scope.reading_data.args.push(varname)
+					scope.writer.other(varname)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.VAR,
+				tokens: tokens => tokens.BRACECLOSE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.FUNCDEFARGS, true)
+				},
+				action(scope) {
+					scope.stop_reading(this.syntax.VAR)
+					const args = scope.reading_data.args
+					const varname = scope.buffer
+					args.push(varname)
+					scope.writer.other(varname)
+					scope.stop_reading(this.syntax.FUNCDEFARGS)
+					scope.start_reading(this.syntax.FUNCDEF, {args})
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			*/
+
+
+
+
+
+
+
+
 			{
 				tokens: tokens => tokens.CURLYBRACEOPEN,
 				action(scope) {
+					if (scope.is_reading(this.syntax.OBJECTACCESS))
+						scope.stop_reading(this.syntax.OBJECTACCESS)
 					scope.start_reading(this.syntax.OBJECT)
 					return {buffer:scope.currentCharacter}
 				}
@@ -2048,40 +2271,67 @@ const js_parser = (() => {
 			},
 			{
 				syntax: syntax => syntax.VAR,
-				tokens: tokens => tokens.BRACEOPEN,
+				tokens: tokens => tokens.SQUAREBRACEOPEN,
 				action(scope) {
 					scope.writer.var(scope.buffer)
 					scope.stop_reading(this.syntax.VAR)
-					scope.start_reading(this.syntax.FUNCARGS)
+					scope.start_reading(this.syntax.OBJKEYDYN)
 					return {buffer:scope.currentCharacter}
 				}
 			},
 			{
-				syntax: syntax => syntax.VAR,
+				syntax: syntax => syntax.OBJECTACCESS,
+				tokens: tokens => tokens.SQUAREBRACEOPEN,
+				action(scope) {
+					scope.start_reading(this.syntax.OBJKEYDYN)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJECTACCESS,
+				tokens: tokens => tokens.SEPARATOR,
+				action(scope) {
+					scope.stop_reading(this.syntax.OBJECTACCESS)
+					if (scope.is_reading(this.syntax.OBJVAL))
+						scope.stop_reading(this.syntax.OBJVAL)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJECTACCESS,
+				tokens: tokens => [tokens.OPERATOR,tokens.OBJASSIGN],
+				action(scope) {
+					scope.stop_reading(this.syntax.OBJECTACCESS)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJECTACCESS,
 				tokens: tokens => tokens.BRACECLOSE,
 				action(scope) {
-					scope.writer.var(scope.buffer)
-					scope.stop_reading(this.syntax.VAR)
+					scope.stop_reading(this.syntax.OBJECTACCESS)
 					if (scope.is_reading(this.syntax.FUNCARGS))
 						scope.stop_reading(this.syntax.FUNCARGS)
 					return {buffer:scope.currentCharacter}
 				}
 			},
 			{
-				syntax: syntax => syntax.FUNCARGS,
-				tokens: tokens => tokens.BRACECLOSE,
+				syntax: syntax => syntax.OBJECTACCESS,
+				tokens: tokens => tokens.SQUAREBRACECLOSE,
+				condition(scope) {
+					return scope.is_reading(this.syntax.ARRAY, 1)
+				},
 				action(scope) {
-					scope.stop_reading(this.syntax.FUNCARGS)
+					scope.stop_reading(this.syntax.OBJECTACCESS)
+					scope.stop_reading(this.syntax.ARRAY)
 					return {buffer:scope.currentCharacter}
 				}
 			},
 			{
-				syntax: syntax => syntax.VAR,
-				tokens: tokens => tokens.SQUAREBRACEOPEN,
+				syntax: syntax => syntax.ARRAY,
+				tokens: tokens => tokens.SQUAREBRACECLOSE,
 				action(scope) {
-					scope.writer.var(scope.buffer)
-					scope.stop_reading(this.syntax.VAR)
-					scope.start_reading(this.syntax.OBJKEYDYN)
+					scope.stop_reading(this.syntax.ARRAY)
 					return {buffer:scope.currentCharacter}
 				}
 			},
@@ -2129,6 +2379,7 @@ const js_parser = (() => {
 					if (scope.is_reading(this.syntax.VAR))
 						scope.writer.var(scope.buffer)
 					scope.stop_reading(this.syntax.OBJECT, true)
+					scope.start_reading(this.syntax.OBJECTACCESS)
 					return {buffer:scope.currentCharacter}
 				}
 			},
@@ -2138,11 +2389,33 @@ const js_parser = (() => {
 				action(scope) {
 					scope.writer.var(scope.buffer)
 					scope.stop_reading(this.syntax.VAR)
+					if (scope.is_reading(this.syntax.OBJVAL))
+						scope.stop_reading(this.syntax.OBJVAL)
 					return {buffer:scope.currentCharacter}
 				}
 			},
 			{
-				not_syntax: syntax => [syntax.VAR,syntax.STRING,syntax.OBJKEY,syntax.OBJECT],
+				syntax: syntax => syntax.OBJVAL,
+				tokens: tokens => tokens.SEPARATOR,
+				action(scope) {
+					scope.stop_reading(this.syntax.OBJVAL)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				syntax: syntax => syntax.OBJKEY,
+				tokens: tokens => tokens.SEPARATOR,
+				action(scope) {
+					const buff = scope.buffer
+					const var_name = buff.match(/([^\s,]+)\s*$/)[1]
+					scope.writer.other(buff+':')
+					scope.writer.var(var_name)
+					scope.stop_reading(this.syntax.OBJKEY)
+					return {buffer:scope.currentCharacter}
+				}
+			},
+			{
+				not_syntax: syntax => [syntax.VAR,syntax.STRING,syntax.OBJKEY,syntax.OBJECT,syntax.OBJECTACCESS],
 				tokens: tokens => tokens.DEFAULT,
 				action(scope) {
 					scope.writer.other(scope.buffer)
@@ -2152,15 +2425,22 @@ const js_parser = (() => {
 			},
 			{
 				action(scope) {
-					return {buffer:scope.currentCharacter}
+					const buff = scope.buffer
+					if (scope.is_reading(this.syntax.VAR) && buff === 'return') {
+						scope.stop_reading(this.syntax.VAR)
+						scope.writer.other(buff)
+						return {setBuffer:scope.currentCharacter}
+					}
+					return {setBuffer:buff+scope.currentCharacter}
 				}
 			}
 		],
-		["STRING","OBJECT","ARRAY","FUNCARGS","FUNCCONT","OBJVAL","OBJKEY","VAR","ESCAPE","OBJKEYDYN","DOT"],
-		["CURLYBRACEOPEN","SQUAREBRACEOPEN","BRACEOPEN","CURLYBRACECLOSE","SQUAREBRACECLOSE","BRACECLOSE","QUOTE","OPERATOR","SEPARATOR","ESCAPE","OBJASSIGN","DOT"],
+		["STRING","OBJECT","OBJECTACCESS","ARRAY","BRACES","FUNCARGS","FUNCDEFARGS","FUNCDEF","FUNCCONT","FUNCCONTBRACED","OBJVAL","OBJKEY","VAR","ESCAPE","OBJKEYDYN","DOT"],
+		["CURLYBRACEOPEN","SQUAREBRACEOPEN","BRACEOPEN","CURLYBRACECLOSE","SQUAREBRACECLOSE","BRACECLOSE","QUOTE","OPERATOR","SEPARATOR","ESCAPE","OBJASSIGN","DOT","WHITESPACE"],
 		{
 			var: "",
 			other: "",
+			nest: "",
 		}
 	)
 })()
@@ -2210,13 +2490,19 @@ const instance = instanceOptions => {
 				inst: () => '',
 				dump: inst => inst,
 				var: (inst, name) => {
-					const reseverd = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null','return']
-					if (reseverd.includes(name)) return inst+name
+					const reserved = ['true','false','typeof','instanceof','Math','Object','Array','Boolean','String','console','undefined','null','return','parseFloat','parseInt']
+					if (reserved.includes(name)) return inst+name
 					const first = name.charCodeAt(0)
 					if (first >= 48 && first <= 57) return inst+name
 					return inst+'internal_props.'+name
 				},
-				other: (inst, str) => inst+str
+				other: (inst, str) => inst+str,
+				nest: (inst, contents, arguments, options) =>
+					inst + parse_js(
+						contents,
+						arguments,
+						options
+					)
 			}
 		},
 		{
@@ -2227,8 +2513,9 @@ const instance = instanceOptions => {
 			SQUAREBRACECLOSE: [']'],
 			BRACECLOSE: [')'],
 			QUOTE: ['"',"'",'`'],
-			OPERATOR: ['+','-','/','*','&','|','!','=','?'],
-			SEPARATOR: [',',' ','\t','\n'],
+			OPERATOR: ['+','-','/','*','&','|','!','=','?','>','<'],
+			SEPARATOR: [','],
+			WHITESPACE: [' ','\t','\n'],
 			ESCAPE: ['\\'],
 			OBJASSIGN: [':'],
 			DOT: ['.']
@@ -2615,7 +2902,7 @@ return instance({
 			lang: [],
 			slot: [],
 			spellcheck: [],
-			style: [],
+			style: ['pos'],
 			tabindex: [],
 			title: [],
 			translate: [],
@@ -3078,3 +3365,20 @@ return instance({
 })
 
 })()
+
+
+
+/*
+attrvalue=
+attrassingn=
+	(attrname:tag[attrname]=true) |
+	(attrname:attrname)(attrassign)(%attrvalue:tag[attrname]=attrvalue)
+
+(indent*:n=length)
+	(opentag:tag={indent:n,attrs:{}})(tagname:tag.name)
+		((idmarker)(id:tag.attrs.id)?)
+		((classmarker)(class:tag.attrs.class)*)
+		((indent+)(%attrassign)*)
+		((newline)(indent*:m=length)(%attrassign)*)
+	(closetag)
+*/
