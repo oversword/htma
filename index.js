@@ -2536,6 +2536,7 @@ const instance = instanceOptions => {
 			'oncanplaythrough',
 			'onchange',
 			'onclick',
+			'oncontextmenu',
 			'oncopy',
 			'oncuechange',
 			'oncut',
